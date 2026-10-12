@@ -18,6 +18,7 @@ touches the network:
 from __future__ import annotations
 
 import ipaddress
+import json
 import re
 from dataclasses import dataclass
 
@@ -105,3 +106,72 @@ def enforce_scope(scope: Scope, target: str) -> None:
             f"({scope.raw!r}). This is enforced independently of the "
             f"agent's plan."
         )
+
+
+class ScopeFileError(Exception):
+    """Raised when a scope file is missing, malformed, or not marked authorized."""
+
+
+def load_scope_file(path: str) -> tuple[Scope, dict]:
+    """Load a committed scope file instead of prompting every run.
+
+    This trades the interactive per-run prompt for a one-time, auditable,
+    user-authored file. It is NOT a bypass of the authorization check — the
+    file itself has to contain an explicit `"authorized": true` plus who
+    confirmed it, or this refuses to run. You still have to go write that
+    down yourself; nothing here sets it for you.
+
+    Expected JSON shape:
+        {
+          "program": "Acme Corp Bug Bounty (HackerOne)",
+          "scope": "*.acme.com, 10.20.0.0/24",
+          "authorized": true,
+          "confirmed_by": "your-handle",
+          "confirmed_at": "2026-10-12",
+          "notes": "optional free text, e.g. a link to the program page"
+        }
+    """
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        raise ScopeFileError(f"Scope file not found: {path!r}")
+    except json.JSONDecodeError as exc:
+        raise ScopeFileError(f"Scope file {path!r} is not valid JSON: {exc}")
+
+    if data.get("authorized") is not True:
+        raise ScopeFileError(
+            f'{path!r} does not have "authorized": true. Refusing to run. Edit '
+            f"the file yourself to confirm you hold current authorization for "
+            f"this exact scope before flipping that to true."
+        )
+    confirmed_by = data.get("confirmed_by")
+    if not confirmed_by:
+        raise ScopeFileError(f'{path!r} is missing "confirmed_by" (who is vouching for this).')
+    scope_str = data.get("scope")
+    if not scope_str:
+        raise ScopeFileError(f'{path!r} is missing "scope".')
+
+    scope = parse_scope(scope_str)
+    meta = {
+        "program": data.get("program", "<unnamed program>"),
+        "confirmed_by": confirmed_by,
+        "confirmed_at": data.get("confirmed_at", "<unspecified>"),
+        "notes": data.get("notes", ""),
+    }
+    return scope, meta
+
+
+def print_scope_file_banner(scope: Scope, meta: dict) -> None:
+    """Print what was loaded from a scope file (no input() prompt — the file
+    itself is the auditable confirmation)."""
+    print("=" * 70)
+    print("D3M0N — Autonomous Red-Team Agent")
+    print("=" * 70)
+    print(f"Program: {meta['program']}")
+    print(f"Scope: {scope.raw}")
+    print(f"Authorization confirmed by: {meta['confirmed_by']} on {meta['confirmed_at']}")
+    if meta.get("notes"):
+        print(f"Notes: {meta['notes']}")
+    print("(loaded from scope file — no per-run prompt)")
+    print("=" * 70)

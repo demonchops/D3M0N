@@ -14,3 +14,4 @@ class AgentState(TypedDict):
     max_steps: int
     done: bool
     summary: str | None
+    cache_breakpoint: tuple[int, int] | None  # internal: rolling prompt-cache marker

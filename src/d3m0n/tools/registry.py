@@ -10,8 +10,11 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from d3m0n.safety import Scope, enforce_scope
+from d3m0n.tools.fuzz import ffuf_scan
 from d3m0n.tools.recon import dns_lookup, http_probe, tls_info
 from d3m0n.tools.scan import nmap_scan
+from d3m0n.tools.subdomain import subfinder_scan
+from d3m0n.tools.vuln import nuclei_scan
 
 # Anthropic tool-use schema. `target` must be present on every tool so the
 # scope check below has something to validate against.
@@ -62,6 +65,50 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "subfinder_scan",
+        "description": "Enumerate subdomains of a root domain using subfinder (passive sources).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "Root domain, e.g. example.com"}
+            },
+            "required": ["target"],
+        },
+    },
+    {
+        "name": "nuclei_scan",
+        "description": (
+            "Run nuclei detection templates (known CVEs, exposed panels, misconfigurations) "
+            "against a URL/host. Detection only — reports what matched, does not exploit."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "URL or hostname"},
+                "severity": {
+                    "type": "string",
+                    "description": "Comma-separated severities, default 'medium,high,critical'",
+                },
+            },
+            "required": ["target"],
+        },
+    },
+    {
+        "name": "ffuf_scan",
+        "description": "Discover hidden paths/files on a web target via wordlist-based fuzzing.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "URL or hostname"},
+                "wordlist": {
+                    "type": "string",
+                    "description": "Optional path to a wordlist file on disk",
+                },
+            },
+            "required": ["target"],
+        },
+    },
+    {
         "name": "finish",
         "description": (
             "Call this when the objective is satisfied (or can't be progressed further) "
@@ -82,6 +129,9 @@ _DISPATCH: dict[str, Callable[..., dict]] = {
     "http_probe": lambda target, **_: http_probe(target),
     "tls_info": lambda target, port=443, **_: tls_info(target, port),
     "nmap_scan": lambda target, ports="1-1024", **_: nmap_scan(target, ports),
+    "subfinder_scan": lambda target, **_: subfinder_scan(target),
+    "nuclei_scan": lambda target, severity="medium,high,critical", **_: nuclei_scan(target, severity),
+    "ffuf_scan": lambda target, wordlist=None, **_: ffuf_scan(target, wordlist),
 }
 
 
