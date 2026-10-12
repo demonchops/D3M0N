@@ -1,0 +1,18 @@
+"""Runtime settings for the agent."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Settings:
+    model: str = os.environ.get("D3M0N_MODEL", "claude-sonnet-5")
+    max_steps: int = int(os.environ.get("D3M0N_MAX_STEPS", "25"))
+    tool_timeout_s: int = int(os.environ.get("D3M0N_TOOL_TIMEOUT", "30"))
+    output_dir: str = os.environ.get("D3M0N_OUTPUT_DIR", "./d3m0n_runs")
+    anthropic_api_key: str | None = os.environ.get("ANTHROPIC_API_KEY")
+
+
+SETTINGS = Settings()
