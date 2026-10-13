@@ -12,6 +12,7 @@ from typing import Any, Callable
 from d3m0n.safety import Scope, enforce_scope
 from d3m0n.tools.burp_scanner import burp_scan
 from d3m0n.tools.burp_traffic import burp_traffic_review
+from d3m0n.tools.cors_check import cors_check
 from d3m0n.tools.crawler import crawl_site
 from d3m0n.tools.fuzz import ffuf_scan
 from d3m0n.tools.graphql import graphql_introspect
@@ -20,6 +21,7 @@ from d3m0n.tools.js_secrets import js_secrets_scan
 from d3m0n.tools.recon import dns_lookup, http_probe, tls_info
 from d3m0n.tools.scan import nmap_scan
 from d3m0n.tools.subdomain import subfinder_scan
+from d3m0n.tools.takeover_check import subdomain_takeover_check
 from d3m0n.tools.vuln import nuclei_scan
 
 # Anthropic tool-use schema. `target` must be present on every tool so the
@@ -264,6 +266,38 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "cors_check",
+        "description": (
+            "Probe for CORS misconfiguration: sends a fixed small set of Origin header "
+            "values (arbitrary unrelated origin, null, naive-prefix, naive-suffix) and "
+            "reports how Access-Control-Allow-Origin/-Credentials respond. Flags include "
+            "reflects_arbitrary_origin(_with_credentials), allows_null_origin, "
+            "subdomain_prefix/suffix_pattern_weakness. Detection only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"target": {"type": "string", "description": "URL or hostname"}},
+            "required": ["target"],
+        },
+    },
+    {
+        "name": "subdomain_takeover_check",
+        "description": (
+            "Check whether a subdomain's CNAME points at a known takeover-prone provider "
+            "(GitHub Pages, S3, Heroku, Azure, Shopify, and others) and, if so, whether the "
+            "response body matches that provider's 'unclaimed resource' fingerprint. A "
+            "match is a real, often high-severity lead (dangling DNS); no match is "
+            "inconclusive, not a clean bill of health, since fingerprints can drift."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "Subdomain hostname to check"},
+            },
+            "required": ["target"],
+        },
+    },
+    {
         "name": "finish",
         "description": (
             "Call this when the objective is satisfied (or can't be progressed further) "
@@ -296,6 +330,8 @@ _DISPATCH: dict[str, Callable[..., dict]] = {
     ),
     "js_secrets_scan": lambda target, **_: js_secrets_scan(target),
     "graphql_introspect": lambda target, **_: graphql_introspect(target),
+    "cors_check": lambda target, **_: cors_check(target),
+    "subdomain_takeover_check": lambda target, **_: subdomain_takeover_check(target),
     "burp_traffic_review": lambda target, export_path, scope, **_: burp_traffic_review(
         export_path, scope
     ),

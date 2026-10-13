@@ -126,6 +126,13 @@ def _short_note(tool_name: str, result: dict) -> str:
         return f"{result.get('finding_count', 0)} pattern matches"
     if tool_name == "graphql_introspect":
         return "introspection ENABLED" if result.get("introspection_enabled") else "introspection off"
+    if tool_name == "cors_check":
+        flags = result.get("flags", [])
+        return f"{len(flags)} CORS flags: {', '.join(flags)}" if flags else "no CORS flags"
+    if tool_name == "subdomain_takeover_check":
+        if not result.get("matches_known_service"):
+            return "no known-provider CNAME"
+        return f"{result.get('service')}: {result.get('fingerprint_check')}"
     return "ok"
 
 

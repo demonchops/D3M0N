@@ -279,6 +279,8 @@ src/d3m0n/
     crawler.py          bounded in-scope GET-only crawl
     js_secrets.py       fixed-pattern secrets/endpoint scan of a JS file
     graphql.py          GraphQL introspection check
+    cors_check.py       CORS misconfiguration probe
+    takeover_check.py   subdomain takeover (CNAME + fingerprint) check
     report.py         writes the findings report to disk
 tui/                Go module: the live dashboard (see "Live TUI" above)
 tests/
@@ -320,6 +322,14 @@ tests/
   JWTs, private key headers, embedded hidden API paths
 - `graphql_introspect` — checks whether a GraphQL endpoint's introspection
   is open, and summarizes the schema if so
+- `cors_check` — sends a fixed set of Origin header values and flags
+  reflected-arbitrary-origin, null-origin, and naive prefix/suffix
+  allowlist patterns in the response's Access-Control-Allow-* headers
+- `subdomain_takeover_check` — checks a subdomain's CNAME against known
+  takeover-prone providers (GitHub Pages, S3, Heroku, Azure, Shopify, and
+  others) and, if matched, checks the response body for that provider's
+  "unclaimed resource" fingerprint — a dangling CNAME is a classic,
+  often high-severity finding
 
 Any tool whose binary/API isn't installed/configured returns a clear
 `"error"` explaining what to install or set up, rather than crashing the run. Everything here is
