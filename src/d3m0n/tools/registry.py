@@ -13,6 +13,7 @@ from d3m0n.safety import Scope, enforce_scope
 from d3m0n.tools.burp_scanner import burp_scan
 from d3m0n.tools.burp_traffic import burp_traffic_review
 from d3m0n.tools.fuzz import ffuf_scan
+from d3m0n.tools.idor_check import idor_check
 from d3m0n.tools.recon import dns_lookup, http_probe, tls_info
 from d3m0n.tools.scan import nmap_scan
 from d3m0n.tools.subdomain import subfinder_scan
@@ -166,6 +167,30 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "idor_check",
+        "description": (
+            "Request one resource URL (one you already saw while browsing authenticated "
+            "content — an order/profile/document/account reference) as three identities: "
+            "your primary session, a second configured test account, and anonymous. Returns "
+            "all three responses side by side (status, length, snippet, body-similarity "
+            "score) so you can tell whether a DIFFERENT account sees the same data: broken "
+            "access control / IDOR. Detection only — gathers the comparison, never declares "
+            "a verdict itself. The URL's path/query must be identifier-shaped (letters, "
+            "digits, / _ . - ~ : = & ? , only, checked after full percent-decoding); anything "
+            "payload-shaped is refused."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "The exact resource URL to compare across identities",
+                },
+            },
+            "required": ["target"],
+        },
+    },
+    {
         "name": "finish",
         "description": (
             "Call this when the objective is satisfied (or can't be progressed further) "
@@ -192,6 +217,7 @@ _DISPATCH: dict[str, Callable[..., dict]] = {
     "burp_scan": lambda target, paths=None, scan_config_name=None, **_: burp_scan(
         target, paths, scan_config_name
     ),
+    "idor_check": lambda target, **_: idor_check(target),
     "burp_traffic_review": lambda target, export_path, scope, **_: burp_traffic_review(
         export_path, scope
     ),

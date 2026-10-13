@@ -112,6 +112,9 @@ def _short_note(tool_name: str, result: dict) -> str:
         return f"{result.get('issue_count', 0)} Burp issues ({result.get('status')})"
     if tool_name == "burp_traffic_review":
         return f"{result.get('items_flagged', 0)} flagged of {result.get('items_total', 0)}"
+    if tool_name == "idor_check":
+        sim = result.get("a_vs_b_body_similarity")
+        return f"A/B similarity {sim}" if sim is not None else "compared"
     return "ok"
 
 

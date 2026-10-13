@@ -168,6 +168,34 @@ model to reference it.
 worth scanning on a host (e.g. everything `ffuf_scan` just discovered) into
 one Burp task instead of one call per path.
 
+### Broken access control / IDOR (`idor_check`)
+
+Everything above tests one identity's own access. IDOR/broken access
+control — probably the most common real bounty payout — only shows up
+when you compare TWO different accounts against the same resource. Set
+up a second test account and configure its session the same way as the
+first:
+
+```bash
+export D3M0N_SESSION_HEADERS="Cookie: sessionid=alice-session"     # primary ("A")
+export D3M0N_SESSION_HEADERS_B="Cookie: sessionid=bob-session"     # second account ("B")
+```
+
+`idor_check` then requests one resource URL (e.g. one you noticed while
+browsing as A, like `/api/orders/4471`) as A, as B, and anonymously, and
+returns all three side by side — status, length, a snippet, and how
+similar B's response body is to A's. It never decides this is a real
+finding; a high similarity plus a non-error status for B is a lead the
+agent writes up with a manual verification recipe, same as everything
+else here.
+
+It's bounded the same way `http_probe` is, for the same reason: a query
+string lets the caller embed an arbitrary value, so without a
+restriction this would be a second request-tampering primitive. The
+path/query (fully percent-decoded, so it can't be dodged by encoding)
+must be plain resource-reference characters — letters, digits,
+`/ _ . - ~ : = & ? ,` — or the tool refuses rather than send it.
+
 ## Architecture
 
 ```
@@ -189,6 +217,7 @@ src/d3m0n/
     scan.py           nmap wrapper
     burp_scanner.py    Burp Suite Pro/Enterprise REST API (live Scanner)
     burp_traffic.py    Burp proxy-history export review (any edition)
+    idor_check.py      cross-session (A/B/anonymous) access-control comparison
     report.py         writes the findings report to disk
 tui/                Go module: the live dashboard (see "Live TUI" above)
 tests/
@@ -223,6 +252,7 @@ tests/
 - `nmap_scan` — service/version detection, `-sV -Pn`, no exploit scripts
   (needs the local `nmap` binary)
 - `burp_scan` / `burp_traffic_review` — see "Burp Suite integration" above
+- `idor_check` — see "Broken access control / IDOR" above
 
 Any tool whose binary/API isn't installed/configured returns a clear
 `"error"` explaining what to install or set up, rather than crashing the run. Everything here is

@@ -57,6 +57,14 @@ class Settings:
     session_headers: dict[str, str] = field(
         default_factory=lambda: _parse_session_headers(os.environ.get("D3M0N_SESSION_HEADERS"))
     )
+    # A SECOND test account's session, used only by tools/idor_check.py to
+    # compare whether a different identity can see the first session's
+    # data (broken access control / IDOR). Same format, same credential-
+    # hygiene rules as session_headers above — never an LLM parameter,
+    # redacted out of anything returned.
+    session_headers_b: dict[str, str] = field(
+        default_factory=lambda: _parse_session_headers(os.environ.get("D3M0N_SESSION_HEADERS_B"))
+    )
 
 
 SETTINGS = Settings()
