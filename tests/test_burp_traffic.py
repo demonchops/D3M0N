@@ -120,3 +120,19 @@ def test_missing_file_returns_error_not_exception(tmp_path):
     scope = parse_scope("example.com")
     result = burp_traffic_review(str(tmp_path / "nope.xml"), scope)
     assert "error" in result
+
+
+def test_doctype_rejected_before_parsing(tmp_path):
+    # A genuine Burp export never has a DOCTYPE/ENTITY — guards against
+    # XML entity-expansion ("billion laughs") DoS.
+    scope = parse_scope("example.com")
+    path = tmp_path / "evil.xml"
+    path.write_text(
+        '<?xml version="1.0"?>\n'
+        "<!DOCTYPE items [<!ENTITY lol \"lol\">]>\n"
+        "<items><item><host>good.example.com</host></item></items>"
+    )
+
+    result = burp_traffic_review(str(path), scope)
+    assert "error" in result
+    assert "DOCTYPE" in result["error"]

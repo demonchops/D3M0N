@@ -39,6 +39,15 @@ _ERROR_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# xml.etree.ElementTree (expat) isn't vulnerable to classic XXE (external
+# entities can't pull in a file/URL) by default, but it IS vulnerable to a
+# "billion laughs" entity-expansion DoS if the input defines nested
+# entities. A genuine Burp "Save items" export never contains a DOCTYPE or
+# ENTITY declaration, so refuse up front rather than let expat anywhere
+# near one — a cheap guard, not a claim that defused XML parsing is
+# generally solved by this one check.
+_DANGEROUS_XML_MARKERS = (b"<!DOCTYPE", b"<!ENTITY")
+
 
 def _b64_decode(elem) -> bytes:
     if elem is None or elem.text is None:
@@ -85,11 +94,24 @@ def _flag_item(path: str, response: bytes) -> list[str]:
 
 def burp_traffic_review(export_path: str, scope: Scope, max_flagged: int = 50) -> dict:
     try:
-        tree = ET.parse(export_path)
-    except (ET.ParseError, OSError) as exc:
-        return {"export_path": export_path, "error": f"Could not read/parse {export_path!r}: {exc}"}
+        with open(export_path, "rb") as f:
+            raw = f.read()
+    except OSError as exc:
+        return {"export_path": export_path, "error": f"Could not read {export_path!r}: {exc}"}
 
-    root = tree.getroot()
+    if any(marker in raw for marker in _DANGEROUS_XML_MARKERS):
+        return {
+            "export_path": export_path,
+            "error": "Refusing to parse: this file contains a DOCTYPE/ENTITY declaration, "
+            "which a genuine Burp 'Save items' export never has. Guards against XML "
+            "entity-expansion ('billion laughs') denial-of-service.",
+        }
+
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as exc:
+        return {"export_path": export_path, "error": f"Could not parse {export_path!r}: {exc}"}
+
     total = 0
     out_of_scope = 0
     flagged = []
