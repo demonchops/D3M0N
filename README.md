@@ -1,21 +1,38 @@
 # D3M0N
 
-An autonomous AI red-team agent, inspired by [BitterSecurity/Decepticon](https://github.com/BitterSecurity/Decepticon).
+An autonomous AI recon/detection agent for **authorized** bug bounty hunting and
+penetration testing, inspired by [BitterSecurity/Decepticon](https://github.com/BitterSecurity/Decepticon).
 
-D3M0N uses an LLM (Claude, via the Anthropic API) as a planner/executor loop
-(built on LangGraph) that can run reconnaissance and scanning tools against a
-target, reason about the results, and decide what to do next. It's meant for
-**authorized** penetration testing, CTFs, and security research — i.e. you
-either own the target, have a signed engagement letter, or are on a
-competition/lab network explicitly built for this.
+D3M0N uses Claude (via the Anthropic API) as a planner/executor loop (built on
+LangGraph) that runs recon and detection tools against a target, reasons about
+the results, and decides what to check next — enumerate subdomains, probe
+hosts, match known-vulnerability templates, discover hidden content — until
+it's covered what you asked for. A separate Go program gives you a live
+terminal dashboard of a run in progress.
 
-## ⚠️ Authorization gate
+**Honest framing:** this automates the recon phase bounty hunters already
+automate with roughly these same tools (subfinder/nuclei/nmap/ffuf) — it's a
+faster, better-narrated version of "run the usual recon chain and read the
+output," not a vulnerability-discovery engine for logic bugs. It won't find
+IDOR, broken auth, or business-logic flaws — those need manual testing against
+an authenticated session. It earns its keep on large/under-explored attack
+surface and as a first pass before you go manual on anything it surfaces.
 
-D3M0N refuses to run against a target until you explicitly confirm you're
-authorized to test it. This isn't a formality you can silently click through —
-see `src/d3m0n/safety.py`. There's no bypass flag. If you need one for a
-legitimate reason (e.g. CI against your own lab), edit the code yourself and
-own that decision.
+## ⚠️ Scope is the boundary, not a formality
+
+Bug bounty programs are contractually scope-limited — testing outside a
+program's defined scope can get you banned from the platform and, in some
+cases, turns "bug bounty" into unauthorized access under the CFAA or your
+country's equivalent. That's on you personally, not a theoretical risk. So
+D3M0N enforces scope two ways, and there's no flag that turns either off:
+
+1. You confirm authorization once per run (or once via a committed scope
+   file — see below) before anything touches the network.
+2. Every tool call is checked against that scope independently of whatever
+   the model decided (`safety.enforce_scope()`), so a hallucinated or
+   prompt-injected out-of-scope target just fails instead of running.
+
+Within that boundary, the goal is to find as much as it genuinely can.
 
 ## Quick start
 
@@ -24,60 +41,147 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 export ANTHROPIC_API_KEY=sk-ant-...
 
-python -m d3m0n.cli --target 10.0.0.5 --scope "10.0.0.0/24" \
-    --objective "Enumerate open services and identify likely vulnerable software versions"
+python -m d3m0n.cli --scope "*.example.com" \
+    --objective "Enumerate subdomains, probe anything live, and flag anything \
+interesting for a bug bounty report"
 ```
 
 You'll be asked once per run to confirm authorization before anything touches
-the network.
+the network, unless you use `--scope-file` (below).
+
+### Low-friction repeated runs: scope files
+
+Typing a confirmation sentence every run gets old fast if you're working one
+program over several sessions. Copy `scope.example.json` to `scope.json`
+(already gitignored — don't commit a program's real scope), fill in the real
+scope and who's confirming it, flip `"authorized"` to `true`, and run with
+`--scope-file` instead of `--scope`:
+
+```bash
+cp scope.example.json scope.json   # then edit it
+python -m d3m0n.cli --scope-file scope.json --objective "..."
+```
+
+No interactive prompt — the file itself, with `"authorized": true` and a
+`confirmed_by`, is the auditable record. `load_scope_file()` refuses to run
+if either is missing, so copying the example file unedited fails safe (it
+ships with `"authorized": false`).
+
+## Live TUI
+
+`tui/` is a small, separate Go module — a read-only terminal dashboard that
+live-tails a run's JSONL event log (`src/d3m0n/agent/events.py`) and renders
+objective/scope, step progress, in-flight tool calls, a scrolling log of
+completed calls, a findings counter, and elapsed time.
+
+It's a pure viewer, verified both by code inspection and by tracing a full
+run under `strace`: it only ever reads the one file path you give it, polling
+by byte offset every ~300ms — no network access, no subprocess execution, no
+OS-specific file-watcher dependency. That matters here specifically because
+D3M0N's one hard invariant is that scope enforcement can't be bypassed; a
+"viewer" with its own ability to make network/tool calls would undermine
+that, so it has none.
+
+Build it:
+
+```bash
+cd tui
+go build -o d3m0n-tui .
+```
+
+Run it against a run's event file — it's fine to start this before the run
+begins, or point it at a file that's still being appended to:
+
+```bash
+./tui/d3m0n-tui path/to/events.jsonl
+```
+
+The CLI prints the events path for the current run when it finishes (and
+it's also predictable mid-run: `{output_dir}/events_<UTC timestamp>.jsonl`).
+Press `q`, `esc`, or `Ctrl-C` to quit. Once a `run_done` event arrives, the
+dashboard shows `RUN COMPLETE` with the final summary and stops polling.
 
 ## Architecture
 
 ```
 src/d3m0n/
-  cli.py          entrypoint, argument parsing, authorization prompt
-  safety.py        the authorization gate + scope-fencing logic
-  config.py        settings (model name, timeouts, output dir)
+  cli.py           entrypoint, argument parsing, authorization (prompt or file)
+  safety.py         scope parsing, the authorization gate, scope-file loading
+  config.py         settings (model name, timeouts, output dir, result-size cap)
   agent/
-    graph.py        LangGraph state machine: plan -> act -> observe -> decide
-    prompts.py      system prompt + per-node prompt templates
-    state.py        shared agent state (objective, scope, history, findings)
+    graph.py         LangGraph state machine + the efficiency layer (below)
+    prompts.py       system prompt + per-node prompt templates
+    state.py         shared agent state (objective, scope, history, findings)
+    events.py        best-effort JSONL event log, read by tui/
   tools/
-    registry.py     tool schema registry handed to the LLM
-    recon.py        passive/active recon: DNS, HTTP headers, TLS cert info
-    scan.py         nmap wrapper (only runs if nmap is installed)
-    report.py       writes a findings report to disk
+    registry.py      tool schema registry + the scope-enforcing dispatcher
+    recon.py          DNS, HTTP headers, TLS cert info
+    subdomain.py      subfinder wrapper
+    vuln.py           nuclei wrapper (template-based detection)
+    fuzz.py           ffuf wrapper (content discovery)
+    scan.py           nmap wrapper
+    report.py         writes the findings report to disk
+tui/                Go module: the live dashboard (see "Live TUI" above)
 tests/
-  test_safety.py
-  test_scope.py
 ```
 
 ### How it loops
 
-1. **Plan** — the LLM is given the objective, the scope, and a summary of
-   findings so far, and picks the next tool call (or decides it's done).
-2. **Act** — the chosen tool runs, but only if its target is inside the
-   confirmed scope (`safety.py` enforces this independently of what the LLM
-   decides — the model proposing an out-of-scope target doesn't mean it runs).
-3. **Observe** — the tool's output is summarized and appended to the shared
-   state.
-4. **Decide** — loop back to Plan, or stop once the objective is met or a
-   step/time budget is exhausted.
+1. **Plan** — Claude sees the objective, scope, and findings so far, and
+   picks the next tool call(s) — or decides it's done.
+2. **Act** — tool calls run, but only after an independent scope check
+   (`safety.enforce_scope()`); calls the model batches together in one
+   response run **concurrently**, since they're all I/O-bound.
+3. **Observe** — each result is capped to `D3M0N_MAX_RESULT_CHARS` (default
+   4000) before it goes back into the conversation — the full, untruncated
+   result still lands in the final report either way.
+4. **Decide** — loop back to Plan, or stop once the objective is met or the
+   step budget (`--max-steps`) runs out.
 
 ### Tools included
 
-- `dns_lookup` — resolve A/AAAA/MX/TXT records
+- `dns_lookup` — resolve A/AAAA/MX/TXT/NS records
 - `http_probe` — fetch headers, status, server banner, title
 - `tls_info` — certificate subject/issuer/expiry
-- `nmap_scan` — wraps the local `nmap` binary if present (skipped otherwise)
+- `subfinder_scan` — passive subdomain enumeration (needs `subfinder`
+  installed: `go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest`)
+- `nuclei_scan` — known-CVE/misconfiguration template matching, detection
+  only (needs `nuclei`: `go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest`,
+  then `nuclei -update-templates` once)
+- `ffuf_scan` — hidden path/content discovery (needs `ffuf`:
+  `go install github.com/ffuf/ffuf/v2@latest`; falls back to a small
+  built-in wordlist if no wordlist file is found on disk)
+- `nmap_scan` — service/version detection, `-sV -Pn`, no exploit scripts
+  (needs the local `nmap` binary)
 
-These are deliberately read-only/low-impact. Nothing here throws exploits,
-brute-forces credentials, or performs any destructive action — if you extend
-it with more aggressive tooling, keep it scoped to things you're authorized
-to run and respect the engagement's rules of engagement.
+Any tool whose binary isn't installed returns a clear `"error"` explaining
+what to install, rather than crashing the run. Everything here is
+read-only/detection-only by design — nothing throws exploits, brute-forces
+credentials, or performs a destructive action. If you extend it with more
+aggressive tooling, keep it inside what your engagement's rules of
+engagement actually allow.
+
+### Efficiency
+
+Two things keep this from getting slow/expensive as a run goes long:
+
+- **Prompt caching** — the system prompt, the tool schema list, and a
+  rolling breakpoint on the message history are all marked
+  `cache_control: ephemeral`, so a long run pays full price for new content
+  each turn rather than re-pricing the entire growing conversation every
+  step.
+- **Parallel tool execution** — the system prompt tells Claude to batch
+  independent checks (e.g. DNS + HTTP + TLS on the same host, or probing
+  several discovered subdomains at once) into a single response; D3M0N runs
+  those concurrently with a thread pool instead of one at a time.
+
+Tune `--max-steps` (default 25) down for a quick pass and up for a
+thorough one — cost scales with how many turns you let it take, so this is
+still the main lever you control directly.
 
 ## Extending it
 
 Add a new tool by writing a function in `tools/`, registering its schema in
-`tools/registry.py`, and it becomes available to the planner automatically.
-Everything funnels through `safety.enforce_scope()` first.
+`tools/registry.py`, and it's available to the planner automatically.
+Everything funnels through `safety.enforce_scope()` first — there's no way
+to register a tool that skips it.
