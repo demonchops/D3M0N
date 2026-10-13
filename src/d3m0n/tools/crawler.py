@@ -65,6 +65,21 @@ def _redact_sessions(text: str) -> str:
     return text
 
 
+def _safe_resolve(base: str, link: str):
+    """urljoin+urlparse a discovered href/action/src, returning None
+    instead of raising on a malformed one. A malformed or hostile link on
+    a page this crawler visits (urljoin/urlparse can raise ValueError on,
+    e.g., an unmatched '[' in a bracketed-IPv6-looking host) must never
+    crash the whole crawl — the same lesson an earlier adversarial review
+    already taught safety.py's own urlparse call, now applied here too."""
+    try:
+        absolute = urljoin(base, link)
+        parsed = urlparse(absolute)
+    except ValueError:
+        return None
+    return absolute, parsed
+
+
 def crawl_site(start_url: str, scope: Scope, max_pages: int = 20, max_depth: int = 2) -> dict:
     """BFS crawl within `scope`, starting from `start_url`. See module
     docstring for the safety properties — structured metadata only, GET
@@ -82,6 +97,7 @@ def crawl_site(start_url: str, scope: Scope, max_pages: int = 20, max_depth: int
     forms_found = []
     scripts_found: set[str] = set()
     out_of_scope_skipped = 0
+    malformed_links_skipped = 0
 
     while queue and len(pages) < max_pages:
         url, depth = queue.pop(0)
@@ -114,8 +130,11 @@ def crawl_site(start_url: str, scope: Scope, max_pages: int = 20, max_depth: int
             continue
 
         for href in parser.links:
-            absolute = urljoin(url, href)
-            parsed = urlparse(absolute)
+            resolved = _safe_resolve(url, href)
+            if resolved is None:
+                malformed_links_skipped += 1
+                continue
+            absolute, parsed = resolved
             if parsed.scheme not in ("http", "https"):
                 continue
             if not parsed.hostname or not scope.contains(parsed.hostname):
@@ -126,14 +145,20 @@ def crawl_site(start_url: str, scope: Scope, max_pages: int = 20, max_depth: int
                 queue.append((absolute, depth + 1))
 
         for form in parser.forms:
-            action_url = urljoin(url, form["action"]) if form["action"] else url
-            parsed = urlparse(action_url)
+            resolved = _safe_resolve(url, form["action"] or url)
+            if resolved is None:
+                malformed_links_skipped += 1
+                continue
+            action_url, parsed = resolved
             if parsed.hostname and scope.contains(parsed.hostname):
                 forms_found.append({"page": url, "action": action_url, "method": form["method"]})
 
         for src in parser.scripts:
-            absolute = urljoin(url, src)
-            parsed = urlparse(absolute)
+            resolved = _safe_resolve(url, src)
+            if resolved is None:
+                malformed_links_skipped += 1
+                continue
+            absolute, parsed = resolved
             if parsed.hostname and scope.contains(parsed.hostname):
                 scripts_found.add(absolute)
 
@@ -144,5 +169,6 @@ def crawl_site(start_url: str, scope: Scope, max_pages: int = 20, max_depth: int
         "forms_found": forms_found,
         "scripts_found": sorted(scripts_found),
         "out_of_scope_links_skipped": out_of_scope_skipped,
+        "malformed_links_skipped": malformed_links_skipped,
         "truncated": len(queue) > 0,
     }

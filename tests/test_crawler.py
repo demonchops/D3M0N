@@ -88,6 +88,47 @@ def test_max_pages_and_depth_are_clamped(monkeypatch):
     assert result["pages_visited"] <= crawler_mod.MAX_PAGES
 
 
+def test_malformed_href_does_not_crash_the_whole_crawl(monkeypatch):
+    # urljoin()/urlparse() raise ValueError on a malformed bracketed host
+    # (e.g. an unmatched "[") instead of just failing to parse one -- a
+    # single bad link anywhere on any page visited must not crash the
+    # whole crawl (and, upstream, the whole agent run) over it. Same
+    # lesson an earlier adversarial review already taught safety.py's own
+    # urlparse call, reapplied here after it resurfaced in a new tool.
+    monkeypatch.setattr(crawler_mod.time, "sleep", lambda *_: None)
+    scope = parse_scope("example.com")
+
+    def fake_get(url, **kwargs):
+        if url.endswith("/fine"):
+            return FakeResp("<html>fine page</html>")
+        return FakeResp('<html><a href="http://[notclosed/path">bad</a><a href="/fine">ok</a></html>')
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    result = crawler_mod.crawl_site("https://example.com/", scope, max_pages=5, max_depth=2)
+
+    assert result["malformed_links_skipped"] >= 1
+    assert any(p["url"] == "https://example.com/fine" for p in result["pages"])
+
+
+def test_malformed_form_action_and_script_src_do_not_crash(monkeypatch):
+    monkeypatch.setattr(crawler_mod.time, "sleep", lambda *_: None)
+    scope = parse_scope("example.com")
+
+    def fake_get(url, **kwargs):
+        return FakeResp(
+            '<html><form action="http://[bad-form" method="POST"></form>'
+            '<script src="http://[bad-script"></script></html>'
+        )
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    result = crawler_mod.crawl_site("https://example.com/", scope, max_pages=1, max_depth=1)
+
+    assert result["pages_visited"] == 1
+    assert result["forms_found"] == []
+    assert result["scripts_found"] == []
+    assert result["malformed_links_skipped"] == 2
+
+
 def test_non_html_content_type_not_parsed_for_links(monkeypatch):
     monkeypatch.setattr(crawler_mod.time, "sleep", lambda *_: None)
     scope = parse_scope("example.com")
