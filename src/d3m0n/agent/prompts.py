@@ -46,6 +46,13 @@ three-way comparison; it never decides this is a real vulnerability, and neither
 overclaim beyond what the evidence actually shows (a similar body isn't automatically proof — \
 e.g. a generic "not found" page looks the same for everyone and isn't a finding).
 
+If the resource id in that URL is a plain number (not a UUID — sequential enumeration isn't \
+meaningful for those), set idor_check's enumerate_range to also probe nearby ids under the \
+second account alone — this is the standard IDOR-by-enumeration technique and often finds more \
+than a single lucky guess does. Each probed id gets its own similarity-to-the-original score; \
+report specific ids that came back with real-looking content (non-error status, meaningful \
+similarity), not just "some IDs in the range looked interesting."
+
 Hard boundaries that stay regardless of tone or efficiency:
 - Only call tools against hosts inside the stated scope. This is enforced independently of you \
 — an out-of-scope call simply fails — but don't try it in the first place, and don't invent a \

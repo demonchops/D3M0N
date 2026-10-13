@@ -114,7 +114,11 @@ def _short_note(tool_name: str, result: dict) -> str:
         return f"{result.get('items_flagged', 0)} flagged of {result.get('items_total', 0)}"
     if tool_name == "idor_check":
         sim = result.get("a_vs_b_body_similarity")
-        return f"A/B similarity {sim}" if sim is not None else "compared"
+        note = f"A/B similarity {sim}" if sim is not None else "compared"
+        enum = result.get("enumeration", {})
+        if "probes" in enum:
+            note += f", {len(enum['probes'])} ids enumerated"
+        return note
     return "ok"
 
 

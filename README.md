@@ -192,9 +192,24 @@ else here.
 It's bounded the same way `http_probe` is, for the same reason: a query
 string lets the caller embed an arbitrary value, so without a
 restriction this would be a second request-tampering primitive. The
-path/query (fully percent-decoded, so it can't be dodged by encoding)
-must be plain resource-reference characters — letters, digits,
-`/ _ . - ~ : = & ? ,` — or the tool refuses rather than send it.
+path/query (fully percent-decoded, so it can't be dodged by encoding,
+including a double-encoded payload) must be plain resource-reference
+characters — letters, digits, `/ _ . - ~ : = & ? ,` — or the tool refuses
+rather than send it.
+
+**ID enumeration.** Pass `enumerate_range` > 0 and it also probes that
+many nearby numeric ids under session B alone — e.g. `/orders/4471` with
+`enumerate_range=5` also tries 4466–4470 and 4472–4476 — the standard
+IDOR-by-enumeration technique, which usually finds more than checking one
+URL at a time. The new ids come from integer arithmetic on a number
+already found in the URL, never from a new string the model supplies, so
+this can't reopen the request-tampering question above — but every
+generated URL is re-validated anyway before being requested, rather than
+trusting the substitution code to be bug-free. Capped at 10 either side,
+with a short pause between requests so this can't turn into a rapid-fire
+scrape of a real target. It only works on a plain numeric id (path
+segment or an `..._id=123`-shaped query value) — not on a UUID, where
+"nearby" isn't a meaningful concept.
 
 ## Architecture
 

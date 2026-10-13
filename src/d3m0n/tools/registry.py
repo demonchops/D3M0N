@@ -177,7 +177,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "access control / IDOR. Detection only — gathers the comparison, never declares "
             "a verdict itself. The URL's path/query must be identifier-shaped (letters, "
             "digits, / _ . - ~ : = & ? , only, checked after full percent-decoding); anything "
-            "payload-shaped is refused."
+            "payload-shaped is refused. Set enumerate_range > 0 to also probe that many "
+            "numeric ids either side of the one in the URL (e.g. /orders/4471 with "
+            "enumerate_range=5 also tries 4466..4470 and 4472..4476) under the second "
+            "account alone — the standard IDOR-by-enumeration technique. Capped at 10."
         ),
         "input_schema": {
             "type": "object",
@@ -185,6 +188,13 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "target": {
                     "type": "string",
                     "description": "The exact resource URL to compare across identities",
+                },
+                "enumerate_range": {
+                    "type": "integer",
+                    "description": (
+                        "How many nearby numeric ids to probe either side, default 0 "
+                        "(off), capped at 10"
+                    ),
                 },
             },
             "required": ["target"],
@@ -217,7 +227,7 @@ _DISPATCH: dict[str, Callable[..., dict]] = {
     "burp_scan": lambda target, paths=None, scan_config_name=None, **_: burp_scan(
         target, paths, scan_config_name
     ),
-    "idor_check": lambda target, **_: idor_check(target),
+    "idor_check": lambda target, enumerate_range=0, **_: idor_check(target, enumerate_range),
     "burp_traffic_review": lambda target, export_path, scope, **_: burp_traffic_review(
         export_path, scope
     ),
