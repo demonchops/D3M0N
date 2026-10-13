@@ -12,8 +12,11 @@ from typing import Any, Callable
 from d3m0n.safety import Scope, enforce_scope
 from d3m0n.tools.burp_scanner import burp_scan
 from d3m0n.tools.burp_traffic import burp_traffic_review
+from d3m0n.tools.crawler import crawl_site
 from d3m0n.tools.fuzz import ffuf_scan
+from d3m0n.tools.graphql import graphql_introspect
 from d3m0n.tools.idor_check import idor_check
+from d3m0n.tools.js_secrets import js_secrets_scan
 from d3m0n.tools.recon import dns_lookup, http_probe, tls_info
 from d3m0n.tools.scan import nmap_scan
 from d3m0n.tools.subdomain import subfinder_scan
@@ -201,6 +204,66 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "crawl_site",
+        "description": (
+            "Bounded, in-scope, GET-only crawl starting from one URL: follows links/forms/"
+            "script sources found in each page's own HTML (never model-composed per link), "
+            "staying strictly within scope. Never submits a form, only reports its action/"
+            "method. Returns structured metadata only (url/status/length per page, discovered "
+            "forms, discovered JS file URLs) — never raw page content. Use this to map real "
+            "attack surface before pointing burp_scan/nuclei_scan/idor_check at it, instead of "
+            "guessing at paths."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "Starting URL or hostname"},
+                "max_pages": {
+                    "type": "integer",
+                    "description": "Max pages to fetch, default 20, capped at 50",
+                },
+                "max_depth": {
+                    "type": "integer",
+                    "description": "Max link-following depth, default 2, capped at 3",
+                },
+            },
+            "required": ["target"],
+        },
+    },
+    {
+        "name": "js_secrets_scan",
+        "description": (
+            "Fetch one JS (or any text) file and check it against a fixed set of secret/"
+            "hidden-endpoint patterns (AWS/Google/Slack keys, JWTs, private key headers, "
+            "generic api_key-shaped assignments, embedded /api//internal//admin/ paths). A "
+            "match is a lead worth manual verification — it could be a placeholder/example "
+            "value — not a confirmed exposure. Feed it script URLs crawl_site discovers."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "URL of the JS/text file to scan"},
+            },
+            "required": ["target"],
+        },
+    },
+    {
+        "name": "graphql_introspect",
+        "description": (
+            "POST a standard, fixed introspection query to a GraphQL endpoint and report "
+            "whether introspection is enabled and, if so, a summary of the schema (type "
+            "names, query/mutation root type). A misconfigured-open introspection endpoint "
+            "hands over the whole schema for free — a common, easy, real finding."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "GraphQL endpoint URL"},
+            },
+            "required": ["target"],
+        },
+    },
+    {
         "name": "finish",
         "description": (
             "Call this when the objective is satisfied (or can't be progressed further) "
@@ -228,6 +291,11 @@ _DISPATCH: dict[str, Callable[..., dict]] = {
         target, paths, scan_config_name
     ),
     "idor_check": lambda target, enumerate_range=0, **_: idor_check(target, enumerate_range),
+    "crawl_site": lambda target, scope, max_pages=20, max_depth=2, **_: crawl_site(
+        target, scope, max_pages, max_depth
+    ),
+    "js_secrets_scan": lambda target, **_: js_secrets_scan(target),
+    "graphql_introspect": lambda target, **_: graphql_introspect(target),
     "burp_traffic_review": lambda target, export_path, scope, **_: burp_traffic_review(
         export_path, scope
     ),
