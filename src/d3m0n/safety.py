@@ -45,7 +45,16 @@ class Scope:
         # scope — fails closed (never wrongly *allows* anything) but was
         # wrong in the safe direction, which is still worth fixing.
         if "://" in target:
-            parsed_host = urlparse(target).hostname
+            try:
+                parsed_host = urlparse(target).hostname
+            except ValueError:
+                # A malformed bracketed host (e.g. an unmatched "[") makes
+                # urlparse raise instead of just failing to find a host.
+                # contains() is the project's one hardened chokepoint and
+                # must never raise on a bad target, only reject it — leave
+                # `target` as the original string so it still fails closed
+                # via the exact/subdomain-suffix checks below.
+                parsed_host = None
             if parsed_host:
                 target = parsed_host
         target = target.rstrip(".")

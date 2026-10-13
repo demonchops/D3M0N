@@ -5,6 +5,7 @@ from __future__ import annotations
 import socket
 import ssl
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import dns.resolver
 import requests
@@ -27,11 +28,33 @@ def dns_lookup(hostname: str) -> dict:
 def http_probe(url: str) -> dict:
     """Fetch status, headers, and a page title for a URL, GET only.
 
+    Low-impact recon only: a query string or fragment on `url` is refused
+    rather than sent. Scope enforcement (safety.Scope.contains) only ever
+    validates the hostname portion of a target, never the path/query, so
+    without this check an in-scope-looking target could carry an arbitrary
+    GET-based payload (reflected XSS/SSTI/open-redirect/IDOR-by-parameter-
+    change) straight into a real request — with any configured
+    D3M0N_SESSION_HEADERS (an authenticated session) attached automatically.
+    That would make this tool a request-tampering primitive in substance,
+    contradicting the project's "no tool here ever auto-exploits" invariant
+    regardless of what prompts.py tells the model to do with it. This is
+    the tool-level boundary that invariant actually depends on.
+
     If D3M0N_SESSION_HEADERS is configured (see config.py), those headers
     ride along automatically — the caller never supplies or sees them.
     """
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
+    parsed = urlparse(url)
+    if parsed.query or parsed.fragment:
+        return {
+            "url": url,
+            "error": "http_probe is recon-only and refuses any target with a query string "
+            "or fragment -- it would otherwise be sent as a live request, authenticated "
+            "session included if one is configured. Probe the bare host/path; use "
+            "burp_scan or burp_traffic_review for anything that needs a specific parameter "
+            "value, which only ever detect/report and never execute a payload themselves.",
+        }
     try:
         resp = requests.get(
             url, timeout=10, allow_redirects=True, headers=SETTINGS.session_headers or None

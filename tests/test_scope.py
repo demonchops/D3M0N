@@ -52,3 +52,17 @@ def test_enforce_scope_passes_in_scope():
 def test_empty_scope_rejected():
     with pytest.raises(ValueError):
         parse_scope("")
+
+
+def test_malformed_bracketed_host_in_url_fails_closed_not_raise():
+    # urlparse raises ValueError on a URL with a malformed bracketed host
+    # (an unmatched "[") instead of just failing to find one. contains()
+    # is documented as the project's one hardened chokepoint against "a
+    # prompt-injected or hallucinated... target" and must never raise on a
+    # bad target -- only reject it -- or the uncaught exception propagates
+    # all the way out of the agent run (graph.py's _run_one only catches
+    # OutOfScopeError), silently discarding every finding gathered so far.
+    scope = parse_scope("example.com")
+    assert scope.contains("http://[notclosed/path") is False
+    assert scope.contains("http://[::1/x") is False
+    assert scope.contains("http://ex[ample.com/") is False

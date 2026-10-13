@@ -78,6 +78,20 @@ def _base_url() -> str | None:
     return base
 
 
+def _redact(text: str) -> str:
+    """Replace the configured Burp REST API key wherever it appears in
+    `text`. The key is embedded directly in every request path this module
+    builds (see _base_url), and requests/urllib3 exceptions stringify to
+    include the attempted URL — so an unredacted exception message would
+    leak it straight into the LLM conversation and the saved findings
+    report. Mirrors fuzz.py's/vuln.py's _redacted_command for session
+    headers."""
+    key = SETTINGS.burp_api_key
+    if not key:
+        return text
+    return text.replace(key, "***REDACTED-BURP-API-KEY***")
+
+
 def burp_scan(
     target: str,
     paths: list[str] | None = None,
@@ -127,8 +141,10 @@ def burp_scan(
     except requests.RequestException as exc:
         return {
             "target": target,
-            "error": f"Could not reach Burp's REST API at {SETTINGS.burp_api_url!r}: {exc}. "
-            "Is Burp running with the REST API enabled and reachable from this process?",
+            "error": _redact(
+                f"Could not reach Burp's REST API at {SETTINGS.burp_api_url!r}: {exc}. "
+                "Is Burp running with the REST API enabled and reachable from this process?"
+            ),
         }
 
     if resp.status_code not in (200, 201):
@@ -155,13 +171,34 @@ def burp_scan(
         try:
             poll = requests.get(task_url, timeout=15)
         except requests.RequestException as exc:
-            return {"target": target, "error": f"Lost contact with Burp mid-scan: {exc}"}
+            return {
+                "target": target,
+                "error": _redact(f"Lost contact with Burp mid-scan: {exc}"),
+            }
         if poll.status_code != 200:
             return {
                 "target": target,
                 "error": f"Burp API returned {poll.status_code} while polling scan status.",
             }
-        data = poll.json()
+        try:
+            data = poll.json()
+        except ValueError as exc:
+            # Covers both json.JSONDecodeError and requests.exceptions.
+            # JSONDecodeError (a subclass of ValueError either way) --
+            # a 200 OK with a non-JSON body (an HTML error/maintenance
+            # page from Burp or a proxy in front of it) must not crash a
+            # scan that can run for minutes; return a clear error instead.
+            return {
+                "target": target,
+                "error": f"Burp API returned a non-JSON body while polling scan status: {exc}. "
+                f"Body (truncated): {poll.text[:300]!r}",
+            }
+        if not isinstance(data, dict):
+            return {
+                "target": target,
+                "error": "Burp API returned a validly-parsed but non-object JSON body while "
+                f"polling scan status: {data!r}"[:400],
+            }
         status = data.get("scan_status", "unknown")
         if status in ("succeeded", "failed", "paused"):
             break

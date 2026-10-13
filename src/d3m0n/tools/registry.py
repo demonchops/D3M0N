@@ -210,6 +210,15 @@ def run_tool(name: str, tool_input: dict, scope: Scope) -> dict:
     """
     if name not in _DISPATCH:
         return {"error": f"Unknown tool: {name!r}"}
+    # tool_input is model-controlled JSON, never validated against the
+    # declared schema on this side. None of the schemas above list "scope"
+    # as a property, but if a tool call's input happens to include that key
+    # anyway, it would collide with the scope=scope keyword every dispatch
+    # lambda receives below and raise TypeError at the call site itself —
+    # before any individual tool runs, and uncaught by callers (graph.py's
+    # _run_one only catches OutOfScopeError). Drop it so a stray key
+    # degrades to "ignored" instead of "crashes the whole agent run".
+    tool_input = {k: v for k, v in tool_input.items() if k != "scope"}
     target = tool_input.get("target")
     if not target:
         return {"error": f"Tool {name!r} requires a 'target'"}

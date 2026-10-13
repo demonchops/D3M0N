@@ -8,14 +8,19 @@ from d3m0n.config import Settings
 
 
 class FakeResponse:
-    def __init__(self, status_code=200, headers=None, json_data=None, text="", url=""):
+    def __init__(
+        self, status_code=200, headers=None, json_data=None, text="", url="", json_error=None
+    ):
         self.status_code = status_code
         self.headers = headers or {}
         self._json_data = json_data or {}
         self.text = text
         self.url = url
+        self._json_error = json_error
 
     def json(self):
+        if self._json_error is not None:
+            raise self._json_error
         return self._json_data
 
 
@@ -204,6 +209,91 @@ def test_timeout_reports_timed_out_status(monkeypatch):
     result = burp_mod.burp_scan("example.com", timeout_s=0, poll_interval_s=0)
     assert result["status"] == "timed_out"
     assert result["issue_count"] == 0
+
+
+def test_connection_failure_redacts_api_key_from_error(monkeypatch):
+    # D3M0N_BURP_API_KEY is embedded directly in every request path this
+    # module builds (_base_url), and requests/urllib3 exceptions stringify
+    # to include the attempted URL -- so an unredacted error leaks the key
+    # straight into the LLM conversation and the saved findings report.
+    monkeypatch.setattr(
+        burp_mod,
+        "SETTINGS",
+        Settings(burp_api_url="http://127.0.0.1:1337", burp_api_key="TOTALLY-SECRET-BURP-API-KEY-999"),
+    )
+
+    def fake_post(*a, **k):
+        raise requests.ConnectionError(
+            "HTTPConnectionPool(host='127.0.0.1', port=1337): Max retries exceeded with url: "
+            "/TOTALLY-SECRET-BURP-API-KEY-999/v0.1/scan"
+        )
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    result = burp_mod.burp_scan("example.com")
+    assert "error" in result
+    assert "TOTALLY-SECRET-BURP-API-KEY-999" not in result["error"]
+    assert "REDACTED" in result["error"]
+
+
+def test_poll_connection_failure_redacts_api_key_from_error(monkeypatch):
+    monkeypatch.setattr(
+        burp_mod,
+        "SETTINGS",
+        Settings(burp_api_url="http://127.0.0.1:1337", burp_api_key="POLL-PHASE-SECRET-KEY-777"),
+    )
+    post_resp = FakeResponse(
+        status_code=201,
+        headers={"Location": "42"},  # relative -- resolves to .../POLL-PHASE-SECRET-KEY-777/v0.1/42
+        url="http://127.0.0.1:1337/POLL-PHASE-SECRET-KEY-777/v0.1/scan",
+    )
+    monkeypatch.setattr(requests, "post", lambda *a, **k: post_resp)
+
+    def fake_get(*a, **k):
+        raise requests.ConnectionError(
+            "HTTPConnectionPool(host='127.0.0.1', port=1337): Max retries exceeded with url: "
+            "/POLL-PHASE-SECRET-KEY-777/v0.1/42"
+        )
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    result = burp_mod.burp_scan("example.com")
+    assert "error" in result
+    assert "POLL-PHASE-SECRET-KEY-777" not in result["error"]
+    assert "REDACTED" in result["error"]
+
+
+def test_poll_non_json_body_returns_error_not_raise(monkeypatch):
+    monkeypatch.setattr(burp_mod, "SETTINGS", Settings(burp_api_url="http://127.0.0.1:1337"))
+
+    post_resp = FakeResponse(
+        status_code=201, headers={"Location": "/v0.1/scan/1"}, url="http://127.0.0.1:1337/v0.1/scan"
+    )
+    get_resp = FakeResponse(
+        status_code=200,
+        text="<html>502 Bad Gateway</html>",
+        json_error=ValueError("Expecting value: line 1 column 1 (char 0)"),
+    )
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: post_resp)
+    monkeypatch.setattr(requests, "get", lambda *a, **k: get_resp)
+
+    result = burp_mod.burp_scan("example.com")
+    assert "error" in result
+    assert "non-JSON" in result["error"]
+
+
+def test_poll_json_body_not_an_object_returns_error(monkeypatch):
+    monkeypatch.setattr(burp_mod, "SETTINGS", Settings(burp_api_url="http://127.0.0.1:1337"))
+
+    post_resp = FakeResponse(
+        status_code=201, headers={"Location": "/v0.1/scan/1"}, url="http://127.0.0.1:1337/v0.1/scan"
+    )
+    get_resp = FakeResponse(status_code=200, json_data=["unexpected", "array"])
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: post_resp)
+    monkeypatch.setattr(requests, "get", lambda *a, **k: get_resp)
+
+    result = burp_mod.burp_scan("example.com")
+    assert "error" in result
 
 
 def test_missing_location_header_returns_error(monkeypatch):

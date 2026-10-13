@@ -6,11 +6,15 @@ reviewed, right-click > "Save items" > save as XML, and point this tool
 at that file.
 
 This never talks to the network — it only reads the file it's given, and
-only reasons over traffic you already captured yourself. Every host
-present in the export is checked against the confirmed scope before being
-included; anything outside scope is counted and silently excluded from
-the results, never reported on (you may well have other sites in your
-proxy history that have nothing to do with this engagement).
+only reasons over traffic you already captured yourself. Every item's
+real origin — its <host> label, its <url>'s hostname, and its own
+request's Host: header, which can each be set independently in a
+hand-edited or fabricated export — must agree before that host is
+checked against the confirmed scope and the item included; anything
+out of scope, or whose origin is ambiguous/inconsistent, is counted and
+silently excluded from the results, never reported on (you may well have
+other sites in your proxy history that have nothing to do with this
+engagement).
 
 What it flags is a lead for a manual look, not a confirmed vulnerability —
 e.g. "this query parameter's value reappears verbatim in the response" is
@@ -21,8 +25,10 @@ HTML/JS/attribute context? does it execute?), not proof of XSS by itself.
 from __future__ import annotations
 
 import base64
+import codecs
 import re
 import xml.etree.ElementTree as ET
+from urllib.parse import urlparse
 
 from d3m0n.safety import Scope
 
@@ -46,7 +52,66 @@ _ERROR_PATTERN = re.compile(
 # ENTITY declaration, so refuse up front rather than let expat anywhere
 # near one — a cheap guard, not a claim that defused XML parsing is
 # generally solved by this one check.
-_DANGEROUS_XML_MARKERS = (b"<!DOCTYPE", b"<!ENTITY")
+#
+# The check has to run on *decoded text*, not raw bytes: expat auto-detects
+# UTF-16/UTF-32 (via BOM, or the no-BOM signatures below) and happily
+# parses a DOCTYPE/ENTITY written in either, but a literal ASCII byte
+# search (b"<!DOCTYPE" in raw) never matches them — every character is 2
+# or 4 bytes with interleaved nulls — so the guard would silently never
+# fire while expat still fully processes the declaration underneath.
+_DANGEROUS_XML_MARKERS = ("<!DOCTYPE", "<!ENTITY")
+
+_BOM_ENCODINGS: tuple[tuple[bytes, str], ...] = (
+    (codecs.BOM_UTF32_LE, "utf-32-le"),
+    (codecs.BOM_UTF32_BE, "utf-32-be"),
+    (codecs.BOM_UTF8, "utf-8-sig"),
+    (codecs.BOM_UTF16_LE, "utf-16-le"),
+    (codecs.BOM_UTF16_BE, "utf-16-be"),
+)
+
+# No-BOM multi-byte signatures for the start of "<?xml" in UTF-16/UTF-32,
+# per XML 1.0 Appendix F — expat auto-detects these too, BOM or not.
+_NOBOM_ENCODINGS: tuple[tuple[bytes, str], ...] = (
+    (b"\x00\x00\x00\x3c", "utf-32-be"),
+    (b"\x3c\x00\x00\x00", "utf-32-le"),
+    (b"\x00\x3c\x00\x3f", "utf-16-be"),
+    (b"\x3c\x00\x3f\x00", "utf-16-le"),
+)
+
+
+def _sniff_text(raw: bytes) -> str:
+    """Decode `raw` the same way expat would pick an encoding (BOM, or the
+    no-BOM multi-byte signatures XML 1.0 Appendix F defines) for the
+    DOCTYPE/ENTITY guard, so a byte-level substring check can't be dodged
+    by an encoding expat still parses fine. Falls back to utf-8 (replacing
+    bad bytes), which is also correct for the common ASCII-compatible case
+    the original raw-bytes check already handled."""
+    for bom, encoding in _BOM_ENCODINGS:
+        if raw.startswith(bom):
+            try:
+                return raw[len(bom):].decode(encoding, errors="replace")
+            except LookupError:
+                break
+    for sig, encoding in _NOBOM_ENCODINGS:
+        if raw.startswith(sig):
+            try:
+                return raw.decode(encoding, errors="replace")
+            except LookupError:
+                break
+    return raw.decode("utf-8", errors="replace")
+
+
+_HOST_HEADER_RE = re.compile(rb"^host:[ \t]*(\S+)", re.IGNORECASE | re.MULTILINE)
+
+
+def _host_header_hostname(request_bytes: bytes) -> str:
+    """Pull the hostname out of a decoded request's Host: header (port, if
+    any, stripped the same way urlparse strips it from a URL)."""
+    match = _HOST_HEADER_RE.search(request_bytes)
+    if not match:
+        return ""
+    raw_value = match.group(1).decode("ascii", errors="replace").strip()
+    return urlparse(f"//{raw_value}").hostname or ""
 
 
 def _b64_decode(elem) -> bytes:
@@ -63,7 +128,14 @@ def _b64_decode(elem) -> bytes:
 def _flag_item(path: str, response: bytes) -> list[str]:
     flags: list[str] = []
     resp_text = response.decode("utf-8", errors="replace")
-    header_block = resp_text.split("\r\n\r\n", 1)[0].lower()
+    # Tolerate LF-only header/body separation, not just strict CRLF-CRLF:
+    # a literal "\r\n\r\n" split silently finds no match on an LF-only
+    # response, so header_block falls back to the ENTIRE response text
+    # (headers *and* body). For the missing-header checks below, that's a
+    # silent false negative whenever the body happens to mention a header
+    # name that's genuinely missing (e.g. a debug/echo page reflecting
+    # request headers back).
+    header_block = re.split(r"\r?\n\r?\n", resp_text, maxsplit=1)[0].lower()
 
     for header in _SECURITY_HEADERS:
         if header not in header_block:
@@ -99,7 +171,7 @@ def burp_traffic_review(export_path: str, scope: Scope, max_flagged: int = 50) -
     except OSError as exc:
         return {"export_path": export_path, "error": f"Could not read {export_path!r}: {exc}"}
 
-    if any(marker in raw for marker in _DANGEROUS_XML_MARKERS):
+    if any(marker in _sniff_text(raw) for marker in _DANGEROUS_XML_MARKERS):
         return {
             "export_path": export_path,
             "error": "Refusing to parse: this file contains a DOCTYPE/ENTITY declaration, "
@@ -119,8 +191,24 @@ def burp_traffic_review(export_path: str, scope: Scope, max_flagged: int = 50) -
     for item in root.findall("item"):
         total += 1
         host_elem = item.find("host")
-        host = (host_elem.text or "").strip() if host_elem is not None else ""
-        if not host or not scope.contains(host):
+        declared_host = (host_elem.text or "").strip() if host_elem is not None else ""
+        url_host = urlparse(item.findtext("url") or "").hostname or ""
+        request_host = _host_header_hostname(_b64_decode(item.find("request")))
+
+        # The <host> element is just a label; it is NOT cross-checked
+        # against the item's own <url> or its request's Host: header by
+        # the XML format itself. Require at least two of the three
+        # sources to be present and for every present one to agree —
+        # otherwise this item's real origin is ambiguous (or the label
+        # was simply forged) and it must not be trusted under that name.
+        # A genuine, unedited Burp "Save items" export always has all
+        # three agree.
+        present = [h for h in (declared_host, url_host, request_host) if h]
+        if not declared_host or len(present) < 2 or len({h.lower() for h in present}) != 1:
+            out_of_scope += 1
+            continue
+        host = declared_host
+        if not scope.contains(host):
             out_of_scope += 1
             continue
 
