@@ -108,6 +108,10 @@ def _short_note(tool_name: str, result: dict) -> str:
         return f"HTTP {result.get('status')} — {result.get('server') or 'no server header'}"
     if tool_name == "tls_info":
         return f"expires in {result.get('expires_in_days')}d"
+    if tool_name == "burp_scan":
+        return f"{result.get('issue_count', 0)} Burp issues ({result.get('status')})"
+    if tool_name == "burp_traffic_review":
+        return f"{result.get('items_flagged', 0)} flagged of {result.get('items_total', 0)}"
     return "ok"
 
 

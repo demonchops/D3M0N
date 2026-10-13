@@ -14,6 +14,11 @@ class Settings:
     output_dir: str = os.environ.get("D3M0N_OUTPUT_DIR", "./d3m0n_runs")
     max_result_chars: int = int(os.environ.get("D3M0N_MAX_RESULT_CHARS", "4000"))
     anthropic_api_key: str | None = os.environ.get("ANTHROPIC_API_KEY")
+    # Burp Suite Professional/Enterprise's REST API (Settings > Suite > REST
+    # API in Burp). Community Edition has no Scanner/REST API — see
+    # tools/burp_traffic.py for a Community-compatible alternative.
+    burp_api_url: str | None = os.environ.get("D3M0N_BURP_API_URL")
+    burp_api_key: str | None = os.environ.get("D3M0N_BURP_API_KEY")
 
 
 SETTINGS = Settings()

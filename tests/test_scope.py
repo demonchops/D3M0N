@@ -23,6 +23,21 @@ def test_ip_in_scope_cidr():
     assert not scope.contains("10.0.1.5")
 
 
+def test_full_url_target_resolves_to_hostname():
+    # A tool schema may hand over a full URL ("URL or hostname") rather than
+    # a bare host — contains() must extract the hostname before matching,
+    # not reject the whole string as unparseable.
+    scope = parse_scope("example.com")
+    assert scope.contains("https://api.example.com/v1/users?id=1")
+    assert scope.contains("http://example.com:8080/path")
+    assert not scope.contains("https://evil.com/example.com")
+
+
+def test_full_url_target_ip_in_cidr():
+    scope = parse_scope("10.0.0.0/24")
+    assert scope.contains("http://10.0.0.5:8080/admin")
+
+
 def test_enforce_scope_raises_on_violation():
     scope = parse_scope("example.com")
     with pytest.raises(OutOfScopeError):

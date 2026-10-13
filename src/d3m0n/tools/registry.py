@@ -10,6 +10,8 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from d3m0n.safety import Scope, enforce_scope
+from d3m0n.tools.burp_scanner import burp_scan
+from d3m0n.tools.burp_traffic import burp_traffic_review
 from d3m0n.tools.fuzz import ffuf_scan
 from d3m0n.tools.recon import dns_lookup, http_probe, tls_info
 from d3m0n.tools.scan import nmap_scan
@@ -109,6 +111,47 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "burp_scan",
+        "description": (
+            "Launch a Burp Suite Scanner scan (Burp Suite PROFESSIONAL/ENTERPRISE only, via "
+            "its REST API) against a URL/host and return the issues Burp's own engine finds. "
+            "Detection only — never confirms exploitability or sends anything beyond what "
+            "Burp's Scanner sends on its own. Returns a clear error if Burp's REST API isn't "
+            "configured/reachable, or if you're on Community Edition (no Scanner there)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "URL or hostname"},
+                "path": {"type": "string", "description": "Path to scan, default '/'"},
+            },
+            "required": ["target"],
+        },
+    },
+    {
+        "name": "burp_traffic_review",
+        "description": (
+            "Review an exported Burp proxy-history XML file (Proxy > HTTP history > Save "
+            "items, in any Burp edition including Community) for things worth a manual "
+            "look: missing security headers, cookies without Secure/HttpOnly, reflected "
+            "query params, verbose error pages. Flags leads, not confirmed vulnerabilities."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "The primary hostname this export is about (checked against scope)",
+                },
+                "export_path": {
+                    "type": "string",
+                    "description": "Path to the Burp 'Save items' XML export file on disk",
+                },
+            },
+            "required": ["target", "export_path"],
+        },
+    },
+    {
         "name": "finish",
         "description": (
             "Call this when the objective is satisfied (or can't be progressed further) "
@@ -132,6 +175,10 @@ _DISPATCH: dict[str, Callable[..., dict]] = {
     "subfinder_scan": lambda target, **_: subfinder_scan(target),
     "nuclei_scan": lambda target, severity="medium,high,critical", **_: nuclei_scan(target, severity),
     "ffuf_scan": lambda target, wordlist=None, **_: ffuf_scan(target, wordlist),
+    "burp_scan": lambda target, path="/", **_: burp_scan(target, path),
+    "burp_traffic_review": lambda target, export_path, scope, **_: burp_traffic_review(
+        export_path, scope
+    ),
 }
 
 
@@ -139,7 +186,11 @@ def run_tool(name: str, tool_input: dict, scope: Scope) -> dict:
     """Dispatch a tool call by name, enforcing scope first.
 
     `finish` has no network target and is handled by the graph directly, so
-    it's never passed here.
+    it's never passed here. `scope` is passed through to every dispatched
+    tool (as a keyword, absorbed by `**_` on the ones that don't need it) —
+    `burp_traffic_review` is the one tool that needs the full Scope object,
+    since it independently re-checks every host embedded in its input file
+    rather than just the single declared `target`.
     """
     if name not in _DISPATCH:
         return {"error": f"Unknown tool: {name!r}"}
@@ -147,4 +198,4 @@ def run_tool(name: str, tool_input: dict, scope: Scope) -> dict:
     if not target:
         return {"error": f"Tool {name!r} requires a 'target'"}
     enforce_scope(scope, target)  # raises OutOfScopeError on violation
-    return _DISPATCH[name](**tool_input)
+    return _DISPATCH[name](scope=scope, **tool_input)

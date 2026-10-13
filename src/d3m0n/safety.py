@@ -21,6 +21,7 @@ import ipaddress
 import json
 import re
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 
 class OutOfScopeError(Exception):
@@ -36,7 +37,18 @@ class Scope:
     hostnames: tuple[str, ...]
 
     def contains(self, target: str) -> bool:
-        target = target.strip().rstrip(".")
+        target = target.strip()
+        # A full URL (scheme://host/path...) — several tool schemas accept
+        # "URL or hostname", so reduce to just the hostname before matching.
+        # Without this, a full URL would fail both checks below and get
+        # rejected as out-of-scope even when its host genuinely is in
+        # scope — fails closed (never wrongly *allows* anything) but was
+        # wrong in the safe direction, which is still worth fixing.
+        if "://" in target:
+            parsed_host = urlparse(target).hostname
+            if parsed_host:
+                target = parsed_host
+        target = target.rstrip(".")
         # IP or CIDR target: must fall inside one of the authorized networks.
         try:
             ip = ipaddress.ip_address(target)

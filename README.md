@@ -101,6 +101,43 @@ it's also predictable mid-run: `{output_dir}/events_<UTC timestamp>.jsonl`).
 Press `q`, `esc`, or `Ctrl-C` to quit. Once a `run_done` event arrives, the
 dashboard shows `RUN COMPLETE` with the final summary and stops polling.
 
+## Burp Suite integration
+
+Two tools, because which one applies depends on your Burp edition — and in
+both cases, **the agent explains a finding and tells you how to verify/PoC
+it yourself; it never does that step for you.** There's no Repeater/Intruder-
+style request-tampering tool in this registry at all, by design, so that's a
+tooling boundary on top of the prompt instruction, not just a prompt instruction.
+
+- **`burp_scan`** — Burp Suite **Professional/Enterprise only**. Drives
+  Burp's own Scanner (passive + active detection) against an in-scope
+  target via Burp's REST API and reports back whatever issues Burp's engine
+  finds. Enable it in Burp (`Settings > Suite > REST API`), then:
+  ```bash
+  export D3M0N_BURP_API_URL=http://127.0.0.1:1337
+  export D3M0N_BURP_API_KEY=...   # only if you set one in Burp
+  ```
+  Community Edition has no Scanner and no REST API — `burp_scan` returns a
+  clear error telling you that if it's not configured/reachable, same as
+  nmap/subfinder/etc. do when their binary is missing.
+
+- **`burp_traffic_review`** — works with **Community Edition too**. In
+  Burp: `Proxy > HTTP history`, select requests, right-click → `Save items`
+  → XML. Point the agent at that file and it reviews the captured traffic
+  for things worth a manual look (missing security headers, cookies
+  without `Secure`/`HttpOnly`, a query parameter reflected verbatim in the
+  response, verbose error pages) — leads, not confirmed vulnerabilities.
+  Every host in the file is checked against scope independently; anything
+  outside scope is counted and dropped before the agent ever sees it, so
+  unrelated sites in your proxy history never leak into a report.
+
+For every finding either tool surfaces, the system prompt requires three
+things in the write-up: what the vulnerability class is and why it matters,
+why *this* instance looks like it (the actual evidence, not inflated
+confidence), and a concrete step-by-step manual verification recipe — e.g.
+"open this request in Repeater, change parameter X to Y, resend, check for
+Z in the response." You run that step; the agent only ever writes it down.
+
 ## Architecture
 
 ```
@@ -120,6 +157,8 @@ src/d3m0n/
     vuln.py           nuclei wrapper (template-based detection)
     fuzz.py           ffuf wrapper (content discovery)
     scan.py           nmap wrapper
+    burp_scanner.py    Burp Suite Pro/Enterprise REST API (live Scanner)
+    burp_traffic.py    Burp proxy-history export review (any edition)
     report.py         writes the findings report to disk
 tui/                Go module: the live dashboard (see "Live TUI" above)
 tests/
@@ -153,9 +192,10 @@ tests/
   built-in wordlist if no wordlist file is found on disk)
 - `nmap_scan` — service/version detection, `-sV -Pn`, no exploit scripts
   (needs the local `nmap` binary)
+- `burp_scan` / `burp_traffic_review` — see "Burp Suite integration" above
 
-Any tool whose binary isn't installed returns a clear `"error"` explaining
-what to install, rather than crashing the run. Everything here is
+Any tool whose binary/API isn't installed/configured returns a clear
+`"error"` explaining what to install or set up, rather than crashing the run. Everything here is
 read-only/detection-only by design — nothing throws exploits, brute-forces
 credentials, or performs a destructive action. If you extend it with more
 aggressive tooling, keep it inside what your engagement's rules of
