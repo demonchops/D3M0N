@@ -29,7 +29,17 @@ def _parse_session_headers(raw: str | None) -> dict[str, str]:
 
 @dataclass(frozen=True)
 class Settings:
+    # "anthropic" (default): Claude via the Anthropic API, needs
+    # ANTHROPIC_API_KEY. "local": a self-hosted OpenAI-compatible server
+    # (Ollama, llama.cpp's server, vLLM, LM Studio, ...), no API key at
+    # all — see agent/backends.py and the README's "Running without an
+    # API key" section. `model` means different things per backend: the
+    # Claude model id for "anthropic", the local server's model name
+    # (e.g. "llama3.1:70b") for "local".
+    backend: str = os.environ.get("D3M0N_BACKEND", "anthropic")
     model: str = os.environ.get("D3M0N_MODEL", "claude-sonnet-5")
+    local_model_url: str | None = os.environ.get("D3M0N_LOCAL_MODEL_URL")
+    local_model_api_key: str | None = os.environ.get("D3M0N_LOCAL_MODEL_API_KEY")
     max_steps: int = int(os.environ.get("D3M0N_MAX_STEPS", "25"))
     tool_timeout_s: int = int(os.environ.get("D3M0N_TOOL_TIMEOUT", "30"))
     output_dir: str = os.environ.get("D3M0N_OUTPUT_DIR", "./d3m0n_runs")

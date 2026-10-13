@@ -85,6 +85,11 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         confirm_authorization(scope)
 
+    if SETTINGS.backend == "local":
+        print(f"[backend] local model at {SETTINGS.local_model_url!r} ({SETTINGS.model})")
+    else:
+        print(f"[backend] Claude via the Anthropic API ({SETTINGS.model})")
+
     methodology_directive, resolved_max_steps, use_critic_pass = _resolve_mode(
         args.mode, args.max_steps, SETTINGS.max_steps
     )

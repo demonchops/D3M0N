@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 import anthropic
 from langgraph.graph import END, StateGraph
 
+from d3m0n.agent.backends import OpenAICompatibleClient
 from d3m0n.agent.events import EventLog
 from d3m0n.agent.prompts import CRITIC_SYSTEM_PROMPT, SYSTEM_PROMPT, objective_prompt
 from d3m0n.agent.state import AgentState
@@ -42,9 +43,31 @@ if _TOOLS_WITH_CACHE:
     _TOOLS_WITH_CACHE[-1] = {**_TOOLS_WITH_CACHE[-1], "cache_control": {"type": "ephemeral"}}
 
 
-def _client() -> anthropic.Anthropic:
+def _client():
+    """Returns whichever backend is configured. Both duck-type
+    anthropic.Anthropic()'s surface (.messages.create(...) -> something
+    with a .content list of blocks), so nothing below this function
+    needs to know or care which one it got — including run_critic_pass,
+    which calls this too.
+    """
+    if SETTINGS.backend == "local":
+        if not SETTINGS.local_model_url:
+            raise RuntimeError(
+                "D3M0N_BACKEND=local requires D3M0N_LOCAL_MODEL_URL to be set (e.g. "
+                "http://localhost:11434/v1 for Ollama) — see the README's "
+                "'Running without an API key' section."
+            )
+        return OpenAICompatibleClient(
+            SETTINGS.local_model_url, SETTINGS.local_model_api_key or "not-needed"
+        )
+    if SETTINGS.backend != "anthropic":
+        raise RuntimeError(f"Unknown D3M0N_BACKEND {SETTINGS.backend!r}; use 'anthropic' or 'local'.")
     if not SETTINGS.anthropic_api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY is not set.")
+        raise RuntimeError(
+            "ANTHROPIC_API_KEY is not set. Set D3M0N_BACKEND=local (with D3M0N_LOCAL_MODEL_URL) "
+            "to run against a self-hosted model instead — see the README's "
+            "'Running without an API key' section."
+        )
     return anthropic.Anthropic(api_key=SETTINGS.anthropic_api_key)
 
 

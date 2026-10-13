@@ -3,8 +3,46 @@ needed, since these don't touch the client."""
 
 import json
 
+import pytest
+
 import d3m0n.agent.graph as graph_mod
+from d3m0n.agent.backends import OpenAICompatibleClient
 from d3m0n.config import Settings
+
+
+def test_client_anthropic_backend_requires_key(monkeypatch):
+    monkeypatch.setattr(graph_mod, "SETTINGS", Settings(backend="anthropic", anthropic_api_key=None))
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+        graph_mod._client()
+
+
+def test_client_anthropic_backend_succeeds_with_key(monkeypatch):
+    monkeypatch.setattr(
+        graph_mod, "SETTINGS", Settings(backend="anthropic", anthropic_api_key="sk-ant-fake")
+    )
+    client = graph_mod._client()
+    assert isinstance(client, graph_mod.anthropic.Anthropic)
+
+
+def test_client_local_backend_requires_url(monkeypatch):
+    monkeypatch.setattr(graph_mod, "SETTINGS", Settings(backend="local", local_model_url=None))
+    with pytest.raises(RuntimeError, match="D3M0N_LOCAL_MODEL_URL"):
+        graph_mod._client()
+
+
+def test_client_local_backend_succeeds_with_url(monkeypatch):
+    monkeypatch.setattr(
+        graph_mod, "SETTINGS", Settings(backend="local", local_model_url="http://localhost:11434/v1")
+    )
+    client = graph_mod._client()
+    assert isinstance(client, OpenAICompatibleClient)
+    assert client.base_url == "http://localhost:11434/v1"
+
+
+def test_client_unknown_backend_raises_clear_error(monkeypatch):
+    monkeypatch.setattr(graph_mod, "SETTINGS", Settings(backend="carrier-pigeon"))
+    with pytest.raises(RuntimeError, match="Unknown D3M0N_BACKEND"):
+        graph_mod._client()
 
 
 def test_short_result_not_truncated():

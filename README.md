@@ -49,6 +49,46 @@ interesting for a bug bounty report"
 You'll be asked once per run to confirm authorization before anything touches
 the network, unless you use `--scope-file` (below).
 
+## Running without an API key
+
+D3M0N's "brain" — the planner that decides what to check next — is an LLM,
+and that's a real external dependency either way. By default that's Claude
+via the Anthropic API (`ANTHROPIC_API_KEY`). If you'd rather run fully
+self-contained with no API key at all, point it at a self-hosted model
+instead:
+
+```bash
+export D3M0N_BACKEND=local
+export D3M0N_LOCAL_MODEL_URL=http://localhost:11434/v1   # Ollama's default
+export D3M0N_MODEL=llama3.1:70b                           # the local model's name
+# no ANTHROPIC_API_KEY needed at all
+
+python -m d3m0n.cli --scope "*.example.com" --objective "..."
+```
+
+This works with **anything that speaks the OpenAI chat-completions
+protocol** — Ollama, llama.cpp's `llama-server`, vLLM, LM Studio,
+text-generation-webui, and others all do. Set `D3M0N_LOCAL_MODEL_URL` to the
+server's base URL (ending in `/v1`); `D3M0N_LOCAL_MODEL_API_KEY` is almost
+never needed (most local servers don't check it), and `D3M0N_MODEL` becomes
+the local model's own name instead of a Claude model id.
+
+**The one real requirement: the model needs genuine tool/function-calling
+support.** This agent's entire loop is built on tool use — a model that only
+emits plain text will never call a tool, and the run will just burn through
+its step budget doing nothing. Most current mid-size-and-up open models
+(Llama 3.1+, Qwen2.5+, and others) support this via their server's
+OpenAI-compatible endpoint; smaller or older models often don't reliably.
+
+**What doesn't change, on purpose:** scope enforcement, tool-call dispatch,
+and the entire safety boundary live in `registry.run_tool()`, independent of
+which model is driving the loop. That was always true — enforcement was
+never designed to depend on the model cooperating — so pointing this at a
+less-aligned local model doesn't weaken it. The prompt caching D3M0N uses for
+the Anthropic backend is a no-op for a local one (local servers don't bill
+per token the same way, so there's nothing to cache for), which is fine and
+expected, not a bug.
+
 ### Low-friction repeated runs: scope files
 
 Typing a confirmation sentence every run gets old fast if you're working one
@@ -263,6 +303,7 @@ src/d3m0n/
   config.py         settings (model name, timeouts, output dir, result-size cap)
   agent/
     graph.py         LangGraph state machine + the efficiency layer (below)
+    backends.py       Claude vs. a local OpenAI-compatible model (see above)
     prompts.py       system prompt + per-node prompt templates
     state.py         shared agent state (objective, scope, history, findings)
     events.py        best-effort JSONL event log, read by tui/
