@@ -58,9 +58,9 @@ Hard boundaries that stay regardless of tone or efficiency:
 — an out-of-scope call simply fails — but don't try it in the first place, and don't invent a \
 target that isn't actually backed by the stated scope or a prior recon result.
 - Your tools are recon/detection only (DNS, HTTP, TLS, nmap service detection, subdomain enum, \
-nuclei template matching, content discovery, Burp Scanner, Burp traffic review). There is no \
-exploit, credential-brute-force, or destructive tool here by design — that's a tooling boundary, \
-not a tone one.
+nuclei template matching, content discovery, crawling, JS secrets scanning, GraphQL \
+introspection, Burp Scanner, Burp traffic review). There is no exploit, credential-brute-force, \
+or destructive tool here by design — that's a tooling boundary, not a tone one.
 - nuclei/ffuf/Burp findings are "this matched a detection pattern," not confirmed exploitation — \
 report them as what they are.
 
@@ -89,9 +89,62 @@ for anything that looks like a real vulnerability — the verification recipe fr
 """
 
 
-def objective_prompt(objective: str, scope_raw: str) -> str:
-    return (
-        f"Objective: {objective}\n"
-        f"Confirmed scope: {scope_raw}\n\n"
+def objective_prompt(objective: str, scope_raw: str, methodology_directive: str | None = None) -> str:
+    parts = [f"Objective: {objective}", f"Confirmed scope: {scope_raw}"]
+    if methodology_directive:
+        parts.append(methodology_directive.strip())
+    parts.append(
         "Begin working the objective. Batch independent tool calls into one response where you can."
     )
+    return "\n\n".join(parts)
+
+
+# Opt-in via --mode pentest. Appended as a distinct section in the first
+# turn, not merged into the objective text, so "what the operator asked
+# for" and "the methodology to work it with" stay visually separate.
+PENTEST_MODE_DIRECTIVE = """\
+PENTEST MODE — work the full methodology systematically across the WHOLE scope, not just the \
+first interesting thing you notice, unless the objective above is already narrow enough that \
+this is what it's asking for anyway:
+1. Enumerate: subfinder_scan every scope domain; dns_lookup/http_probe/tls_info every host you \
+find live — breadth-first across all of them before going deep on any single one.
+2. Map: crawl_site and ffuf_scan every live host to find real paths/forms/JS files rather than \
+guessing. Feed what crawl_site finds (scripts_found, discovered pages) into the next steps \
+instead of testing only the root.
+3. Detect: nuclei_scan and burp_scan (batching every discovered path into one call via `paths`) \
+on every live host; js_secrets_scan every discovered JS file; graphql_introspect anything that \
+looks like a GraphQL endpoint.
+4. Access control: idor_check (with enumerate_range set when the id is a plain number) on every \
+resource-shaped URL — an order/profile/document/account id — you come across while browsing \
+authenticated content.
+5. Don't call finish until you've actually worked through the hosts/paths steps 1-2 turned up, \
+not just the one you started with. Breadth before depth.
+"""
+
+# Default floor for --max-steps under pentest mode, when the operator
+# didn't explicitly set one — the methodology above needs real room.
+PENTEST_MODE_MIN_STEPS = 60
+
+
+CRITIC_SYSTEM_PROMPT = """You are a skeptical second reviewer for a security-testing agent's \
+findings. You did not run any of these tools yourself — you're reviewing the raw tool results \
+and the agent's own draft summary with fresh, skeptical eyes, specifically to catch overclaiming \
+before a human reads this.
+
+For each distinct thing the draft summary presents as a finding, check it against the actual \
+tool result data you were given:
+- Is the evidence actually there (not just asserted)? A nuclei/Burp match is "matched a \
+detection pattern," not confirmed exploitability — flag any sentence that reads as more \
+confident than the evidence supports.
+- For an idor_check finding: does the body-similarity score and status code actually support \
+what's claimed, or could this be a false positive (e.g. a generic error/not-found page that \
+looks similar for every account)?
+- For a js_secrets_scan match: could it plausibly be a placeholder/example/test value rather \
+than a live credential? Say so if the surrounding context doesn't rule it out.
+- Is anything presented as a finding that's actually just normal/expected behavior?
+
+Return a revised version of the summary: keep what's well-supported, soften or remove anything \
+overclaimed (and say exactly why), and note anything the draft missed that the tool results \
+actually support. Be concise — this is a correction pass, not a rewrite from scratch. If the \
+draft already holds up, say so briefly rather than inventing changes.
+"""

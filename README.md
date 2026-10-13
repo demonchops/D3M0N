@@ -101,6 +101,49 @@ it's also predictable mid-run: `{output_dir}/events_<UTC timestamp>.jsonl`).
 Press `q`, `esc`, or `Ctrl-C` to quit. Once a `run_done` event arrives, the
 dashboard shows `RUN COMPLETE` with the final summary and stops polling.
 
+## Pentest mode
+
+```bash
+python -m d3m0n.cli --scope "*.example.com" \
+    --objective "Find anything interesting" --mode pentest
+```
+
+The default mode just works your `--objective` text with whatever tools
+Claude decides to use. `--mode pentest` instead works a fixed methodology
+systematically across the **whole** scope, breadth-first, rather than
+stopping at the first interesting thing it notices:
+
+1. **Enumerate** every scope domain (`subfinder_scan`) and every host that
+   comes back live (`dns_lookup`/`http_probe`/`tls_info`) before going deep
+   on any single one.
+2. **Map** each live host with `crawl_site` and `ffuf_scan` to find real
+   paths/forms/JS files instead of guessing.
+3. **Detect**: `nuclei_scan` and `burp_scan` (batching every discovered path
+   into one call) on every live host; `js_secrets_scan` every discovered JS
+   file; `graphql_introspect` anything that looks like GraphQL.
+4. **Access control**: `idor_check` (with `enumerate_range` set on numeric
+   ids) on every resource-shaped URL found while browsing authenticated
+   content.
+5. Only then does it call `finish`.
+
+It also raises the step budget (to 60, unless you've explicitly set
+`--max-steps` yourself — an explicit value is always respected, never
+second-guessed) and adds a **skeptical self-review pass**: one extra,
+separate Claude call that reads the draft summary against the actual raw
+tool findings and revises anything that reads more confident than the
+evidence supports before the report is written. If it revises anything,
+both versions are saved (`summary` and `summary_before_critic_self_review`
+in the JSON report) so you can see what got toned down and why.
+
+**Calibrating expectations:** this runs the real methodology more
+exhaustively and more systematically than hand-crafting an objective
+each time — it's genuinely the most thorough this toolkit gets. It is
+still everything described below, run more completely: real detection
+tools finding real patterns, not a different, smarter engine underneath.
+It won't find a novel logic bug no tool here has a pattern for, and it
+still only ever reports leads with a verification recipe, never a
+guarantee.
+
 ## Burp Suite integration
 
 Two tools, because which one applies depends on your Burp edition — and in
@@ -233,6 +276,9 @@ src/d3m0n/
     burp_scanner.py    Burp Suite Pro/Enterprise REST API (live Scanner)
     burp_traffic.py    Burp proxy-history export review (any edition)
     idor_check.py      cross-session (A/B/anonymous) access-control comparison
+    crawler.py          bounded in-scope GET-only crawl
+    js_secrets.py       fixed-pattern secrets/endpoint scan of a JS file
+    graphql.py          GraphQL introspection check
     report.py         writes the findings report to disk
 tui/                Go module: the live dashboard (see "Live TUI" above)
 tests/
@@ -268,6 +314,12 @@ tests/
   (needs the local `nmap` binary)
 - `burp_scan` / `burp_traffic_review` — see "Burp Suite integration" above
 - `idor_check` — see "Broken access control / IDOR" above
+- `crawl_site` — bounded, in-scope, GET-only crawl; discovers pages/forms/JS
+  files to feed the other tools instead of guessing at paths
+- `js_secrets_scan` — fixed-pattern scan of a JS/text file for leaked keys,
+  JWTs, private key headers, embedded hidden API paths
+- `graphql_introspect` — checks whether a GraphQL endpoint's introspection
+  is open, and summarizes the schema if so
 
 Any tool whose binary/API isn't installed/configured returns a clear
 `"error"` explaining what to install or set up, rather than crashing the run. Everything here is

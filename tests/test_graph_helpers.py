@@ -48,3 +48,64 @@ def test_event_log_never_raises_on_bad_path():
     # not raised — logging must never break a run.
     log = EventLog("/proc/1/this-cannot-be-written/events.jsonl")
     log.emit("run_start", objective="x", scope="y", max_steps=1)  # must not raise
+
+
+class _FakeTextBlock:
+    def __init__(self, text):
+        self.type = "text"
+        self.text = text
+
+
+class _FakeResponse:
+    def __init__(self, text):
+        self.content = [_FakeTextBlock(text)]
+
+
+class _FakeMessages:
+    def __init__(self, text):
+        self._text = text
+
+    def create(self, **kwargs):
+        return _FakeResponse(self._text)
+
+
+class _FakeClient:
+    def __init__(self, text):
+        self.messages = _FakeMessages(text)
+
+
+def test_critic_pass_returns_revised_summary(monkeypatch):
+    monkeypatch.setattr(graph_mod, "_client", lambda: _FakeClient("Revised: toned down claim X."))
+    revised = graph_mod.run_critic_pass(
+        "obj", "example.com", "Draft: X is definitely vulnerable.", []
+    )
+    assert revised == "Revised: toned down claim X."
+
+
+def test_critic_pass_falls_back_to_draft_on_error(monkeypatch):
+    def boom():
+        raise RuntimeError("ANTHROPIC_API_KEY is not set.")
+
+    monkeypatch.setattr(graph_mod, "_client", boom)
+    revised = graph_mod.run_critic_pass("obj", "example.com", "Draft summary unchanged.", [])
+    assert revised == "Draft summary unchanged."
+
+
+def test_critic_pass_falls_back_on_empty_response(monkeypatch):
+    monkeypatch.setattr(graph_mod, "_client", lambda: _FakeClient(""))
+    revised = graph_mod.run_critic_pass("obj", "example.com", "Draft summary unchanged.", [])
+    assert revised == "Draft summary unchanged."
+
+
+def test_findings_for_critic_truncates_when_huge():
+    big_findings = [{"tool": "nuclei_scan", "result": {"data": "x" * 1000}} for _ in range(200)]
+    text = graph_mod._findings_for_critic(big_findings)
+    assert len(text) <= graph_mod._CRITIC_FINDINGS_CHAR_LIMIT + 100
+    assert "truncated" in text
+
+
+def test_findings_for_critic_passthrough_when_small():
+    findings = [{"tool": "dns_lookup", "result": {"a": 1}}]
+    text = graph_mod._findings_for_critic(findings)
+    assert "dns_lookup" in text
+    assert "truncated" not in text

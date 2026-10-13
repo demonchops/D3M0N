@@ -19,6 +19,7 @@ Two efficiency features live here, on top of a plain linear loop:
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 from datetime import datetime, timezone
 
@@ -26,7 +27,7 @@ import anthropic
 from langgraph.graph import END, StateGraph
 
 from d3m0n.agent.events import EventLog
-from d3m0n.agent.prompts import SYSTEM_PROMPT, objective_prompt
+from d3m0n.agent.prompts import CRITIC_SYSTEM_PROMPT, SYSTEM_PROMPT, objective_prompt
 from d3m0n.agent.state import AgentState
 from d3m0n.config import SETTINGS
 from d3m0n.safety import OutOfScopeError, Scope, parse_scope
@@ -119,16 +120,71 @@ def _short_note(tool_name: str, result: dict) -> str:
         if "probes" in enum:
             note += f", {len(enum['probes'])} ids enumerated"
         return note
+    if tool_name == "crawl_site":
+        return f"{result.get('pages_visited', 0)} pages, {len(result.get('forms_found', []))} forms"
+    if tool_name == "js_secrets_scan":
+        return f"{result.get('finding_count', 0)} pattern matches"
+    if tool_name == "graphql_introspect":
+        return "introspection ENABLED" if result.get("introspection_enabled") else "introspection off"
     return "ok"
 
 
-def build_graph(scope: Scope, event_log: EventLog | None = None):
+_CRITIC_FINDINGS_CHAR_LIMIT = 60_000
+
+
+def _findings_for_critic(findings: list[dict]) -> str:
+    """Serialize findings for the one-shot critic call — a much larger
+    budget than _summarize_result's per-step cap, since this runs once
+    at the end over everything, not once per turn over the growing
+    conversation."""
+    text = json.dumps(findings, default=str)
+    if len(text) <= _CRITIC_FINDINGS_CHAR_LIMIT:
+        return text
+    omitted = len(text) - _CRITIC_FINDINGS_CHAR_LIMIT
+    return f"{text[:_CRITIC_FINDINGS_CHAR_LIMIT]}\n...[truncated {omitted} chars]"
+
+
+def run_critic_pass(objective: str, scope_raw: str, draft_summary: str, findings: list[dict]) -> str:
+    """One extra, non-tool-use Claude call that skeptically reviews the
+    draft summary against the actual findings before the report is
+    written. Returns the (possibly revised) summary. Never raises —
+    falls back to the draft summary unchanged on any failure, since a
+    broken self-review must never break a run that otherwise succeeded."""
+    try:
+        client = _client()
+        response = client.messages.create(
+            model=SETTINGS.model,
+            max_tokens=2048,
+            system=CRITIC_SYSTEM_PROMPT,
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"Objective: {objective}\nScope: {scope_raw}\n\n"
+                        f"Draft summary:\n{draft_summary}\n\n"
+                        f"Actual tool findings:\n{_findings_for_critic(findings)}"
+                    ),
+                }
+            ],
+        )
+        revised = "\n".join(b.text for b in response.content if b.type == "text").strip()
+        return revised or draft_summary
+    except Exception:  # noqa: BLE001 - a broken critic pass must never break the run
+        return draft_summary
+
+
+def build_graph(scope: Scope, event_log: EventLog | None = None, methodology_directive: str | None = None):
     client = _client()
 
     def plan_and_act(state: AgentState) -> AgentState:
         if state["step"] == 0:
             state["messages"].append(
-                {"role": "user", "content": objective_prompt(state["objective"], state["scope_raw"])}
+                {
+                    "role": "user",
+                    "content": objective_prompt(
+                        state["objective"], state["scope_raw"], methodology_directive
+                    ),
+                }
             )
 
         _set_cache_breakpoint(state)
@@ -220,7 +276,13 @@ def build_graph(scope: Scope, event_log: EventLog | None = None):
 
 
 def run_agent(
-    objective: str, scope_raw: str, max_steps: int | None = None, *, live_events: bool = True
+    objective: str,
+    scope_raw: str,
+    max_steps: int | None = None,
+    *,
+    live_events: bool = True,
+    methodology_directive: str | None = None,
+    use_critic_pass: bool = False,
 ) -> AgentState:
     scope = parse_scope(scope_raw)
     resolved_max_steps = max_steps or SETTINGS.max_steps
@@ -235,7 +297,7 @@ def run_agent(
             "run_start", objective=objective, scope=scope_raw, max_steps=resolved_max_steps
         )
 
-    compiled = build_graph(scope, event_log)
+    compiled = build_graph(scope, event_log, methodology_directive)
     initial: AgentState = {
         "objective": objective,
         "scope_raw": scope_raw,
@@ -247,8 +309,18 @@ def run_agent(
         "summary": None,
         "cache_breakpoint": None,
         "events_path": events_path,
+        "summary_before_critic": None,
     }
     final_state = compiled.invoke(initial)
+
+    if use_critic_pass and final_state.get("summary"):
+        original_summary = final_state["summary"]
+        revised = run_critic_pass(
+            objective, scope_raw, original_summary, final_state.get("findings", [])
+        )
+        if revised != original_summary:
+            final_state["summary_before_critic"] = original_summary
+            final_state["summary"] = revised
 
     if event_log is not None:
         event_log.emit(

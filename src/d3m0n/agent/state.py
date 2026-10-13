@@ -16,3 +16,4 @@ class AgentState(TypedDict):
     summary: str | None
     cache_breakpoint: tuple[int, int] | None  # internal: rolling prompt-cache marker
     events_path: str | None  # internal: where live-TUI events are being written, if at all
+    summary_before_critic: str | None  # set only if --mode pentest's critic pass revised the summary
