@@ -4,3 +4,11 @@ __pycache__/
 *.egg-info/
 d3m0n_runs/
 .pytest_cache/
+
+# Your real program scope — may name a private bounty program. Copy from
+# scope.example.json and never commit the filled-in version.
+scope.json
+
+# Go build output, if you build the TUI companion with an output path here.
+tui/d3m0n-tui
+tui/*.exe

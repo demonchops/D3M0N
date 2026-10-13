@@ -15,3 +15,4 @@ class AgentState(TypedDict):
     done: bool
     summary: str | None
     cache_breakpoint: tuple[int, int] | None  # internal: rolling prompt-cache marker
+    events_path: str | None  # internal: where live-TUI events are being written, if at all

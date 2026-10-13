@@ -19,10 +19,13 @@ Two efficiency features live here, on top of a plain linear loop:
 from __future__ import annotations
 
 import concurrent.futures
+import os
+from datetime import datetime, timezone
 
 import anthropic
 from langgraph.graph import END, StateGraph
 
+from d3m0n.agent.events import EventLog
 from d3m0n.agent.prompts import SYSTEM_PROMPT, objective_prompt
 from d3m0n.agent.state import AgentState
 from d3m0n.config import SETTINGS
@@ -93,7 +96,22 @@ def _run_one(call, scope: Scope) -> tuple[dict | None, OutOfScopeError | None]:
         return None, exc
 
 
-def build_graph(scope: Scope):
+def _short_note(tool_name: str, result: dict) -> str:
+    """One-line human summary of a successful tool result, for the live TUI."""
+    if tool_name == "subfinder_scan":
+        return f"{result.get('count', 0)} subdomains"
+    if tool_name == "nuclei_scan":
+        return f"{result.get('count', 0)} template matches"
+    if tool_name == "ffuf_scan":
+        return f"{result.get('count', 0)} paths found"
+    if tool_name == "http_probe":
+        return f"HTTP {result.get('status')} — {result.get('server') or 'no server header'}"
+    if tool_name == "tls_info":
+        return f"expires in {result.get('expires_in_days')}d"
+    return "ok"
+
+
+def build_graph(scope: Scope, event_log: EventLog | None = None):
     client = _client()
 
     def plan_and_act(state: AgentState) -> AgentState:
@@ -126,6 +144,13 @@ def build_graph(scope: Scope):
         finish_call = next((c for c in tool_uses if c.name == "finish"), None)
         exec_calls = [c for c in tool_uses if c.name != "finish"]
 
+        if event_log is not None and exec_calls:
+            event_log.emit(
+                "step",
+                step=state["step"],
+                tools=[{"name": c.name, "target": c.input.get("target", "")} for c in exec_calls],
+            )
+
         # Independent calls the model batched into this one turn run
         # concurrently — they're all I/O-bound (sockets/subprocesses), so
         # this is a real wall-clock win, not just bookkeeping.
@@ -136,11 +161,24 @@ def build_graph(scope: Scope):
 
         tool_results = []
         for call, (result, exc) in zip(exec_calls, exec_outcomes):
+            target = call.input.get("target", "")
             if exc is not None:
                 content = f"BLOCKED by scope enforcement: {exc}"
+                if event_log is not None:
+                    event_log.emit(
+                        "tool_done", step=state["step"], tool=call.name, target=target,
+                        ok=False, note="blocked by scope enforcement",
+                    )
             else:
                 state["findings"].append({"tool": call.name, "input": call.input, "result": result})
                 content = _summarize_result(result)
+                if event_log is not None:
+                    ok = "error" not in result
+                    note = str(result.get("error", "")) if not ok else _short_note(call.name, result)
+                    event_log.emit(
+                        "tool_done", step=state["step"], tool=call.name, target=target,
+                        ok=ok, note=note[:120],
+                    )
             tool_results.append({"type": "tool_result", "tool_use_id": call.id, "content": content})
 
         if finish_call is not None:
@@ -170,18 +208,43 @@ def build_graph(scope: Scope):
     return graph.compile()
 
 
-def run_agent(objective: str, scope_raw: str, max_steps: int | None = None) -> AgentState:
+def run_agent(
+    objective: str, scope_raw: str, max_steps: int | None = None, *, live_events: bool = True
+) -> AgentState:
     scope = parse_scope(scope_raw)
-    compiled = build_graph(scope)
+    resolved_max_steps = max_steps or SETTINGS.max_steps
+
+    event_log = None
+    events_path = None
+    if live_events:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        events_path = os.path.join(SETTINGS.output_dir, f"events_{stamp}.jsonl")
+        event_log = EventLog(events_path)
+        event_log.emit(
+            "run_start", objective=objective, scope=scope_raw, max_steps=resolved_max_steps
+        )
+
+    compiled = build_graph(scope, event_log)
     initial: AgentState = {
         "objective": objective,
         "scope_raw": scope_raw,
         "messages": [],
         "findings": [],
         "step": 0,
-        "max_steps": max_steps or SETTINGS.max_steps,
+        "max_steps": resolved_max_steps,
         "done": False,
         "summary": None,
         "cache_breakpoint": None,
+        "events_path": events_path,
     }
-    return compiled.invoke(initial)
+    final_state = compiled.invoke(initial)
+
+    if event_log is not None:
+        event_log.emit(
+            "run_done",
+            summary=final_state.get("summary") or "",
+            findings_count=len(final_state.get("findings", [])),
+            steps_used=final_state.get("step", 0),
+        )
+
+    return final_state
