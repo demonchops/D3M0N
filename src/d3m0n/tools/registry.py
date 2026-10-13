@@ -113,17 +113,31 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "burp_scan",
         "description": (
-            "Launch a Burp Suite Scanner scan (Burp Suite PROFESSIONAL/ENTERPRISE only, via "
-            "its REST API) against a URL/host and return the issues Burp's own engine finds. "
-            "Detection only — never confirms exploitability or sends anything beyond what "
-            "Burp's Scanner sends on its own. Returns a clear error if Burp's REST API isn't "
-            "configured/reachable, or if you're on Community Edition (no Scanner there)."
+            "Launch ONE Burp Suite Scanner task (Burp Suite PROFESSIONAL/ENTERPRISE only, via "
+            "its REST API) covering a host and one or more paths on it, and return the issues "
+            "Burp's own engine finds. Batch every path worth scanning on this host (e.g. ones "
+            "ffuf_scan already discovered) into one call via `paths` rather than calling this "
+            "once per path. Detection only — never confirms exploitability or sends anything "
+            "beyond what Burp's Scanner sends on its own. Returns a clear error if Burp's REST "
+            "API isn't configured/reachable, or if you're on Community Edition (no Scanner there)."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "target": {"type": "string", "description": "URL or hostname"},
-                "path": {"type": "string", "description": "Path to scan, default '/'"},
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Paths to scan together in one task, default ['/']",
+                },
+                "scan_config_name": {
+                    "type": "string",
+                    "description": (
+                        "Name of a Scanner configuration already saved in Burp's UI (e.g. one "
+                        "that adds an authenticated session via a Session Handling Rule). "
+                        "Optional — omit for an unauthenticated scan with Burp's defaults."
+                    ),
+                },
             },
             "required": ["target"],
         },
@@ -175,7 +189,9 @@ _DISPATCH: dict[str, Callable[..., dict]] = {
     "subfinder_scan": lambda target, **_: subfinder_scan(target),
     "nuclei_scan": lambda target, severity="medium,high,critical", **_: nuclei_scan(target, severity),
     "ffuf_scan": lambda target, wordlist=None, **_: ffuf_scan(target, wordlist),
-    "burp_scan": lambda target, path="/", **_: burp_scan(target, path),
+    "burp_scan": lambda target, paths=None, scan_config_name=None, **_: burp_scan(
+        target, paths, scan_config_name
+    ),
     "burp_traffic_review": lambda target, export_path, scope, **_: burp_traffic_review(
         export_path, scope
     ),

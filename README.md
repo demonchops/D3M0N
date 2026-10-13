@@ -138,6 +138,36 @@ confidence), and a concrete step-by-step manual verification recipe — e.g.
 "open this request in Repeater, change parameter X to Y, resend, check for
 Z in the response." You run that step; the agent only ever writes it down.
 
+### Authenticated scanning
+
+Unauthenticated-only scanning caps you to the attack surface everyone else
+has already hit. To test as a logged-in (test!) account instead:
+
+```bash
+export D3M0N_SESSION_HEADERS="Cookie: sessionid=abc123"
+# multiple headers: one "Name: value" per line
+```
+
+`http_probe`, `nuclei_scan`, and `ffuf_scan` include these headers on every
+request automatically. **This is never an LLM tool parameter** — the model
+never sees or sets the credential, and it's redacted out of anything a tool
+returns (so it can't end up in the conversation sent to Claude's API or in
+the saved JSON report). Treat it like an API key: don't commit it, and
+check what's in a report/transcript before sharing one if this was set
+while generating it.
+
+For `burp_scan` specifically, authenticated scanning works through Burp's
+own mechanisms: set `D3M0N_BURP_LOGIN_USERNAME`/`D3M0N_BURP_LOGIN_PASSWORD`
+for Burp's auto-login during the scan, or set up a Session Handling Rule
+in Burp's UI (`Project options > Sessions`), save it as a named Scanner
+configuration, and pass that name via the `scan_config_name` tool
+parameter — the name is just a label, not a secret, so it's fine for the
+model to reference it.
+
+`burp_scan` also takes a `paths` list, so the agent can batch every path
+worth scanning on a host (e.g. everything `ffuf_scan` just discovered) into
+one Burp task instead of one call per path.
+
 ## Architecture
 
 ```

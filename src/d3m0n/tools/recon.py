@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 import dns.resolver
 import requests
 
+from d3m0n.config import SETTINGS
+
 
 def dns_lookup(hostname: str) -> dict:
     """Resolve common record types for a hostname."""
@@ -23,11 +25,17 @@ def dns_lookup(hostname: str) -> dict:
 
 
 def http_probe(url: str) -> dict:
-    """Fetch status, headers, and a page title for a URL (no auth, GET only)."""
+    """Fetch status, headers, and a page title for a URL, GET only.
+
+    If D3M0N_SESSION_HEADERS is configured (see config.py), those headers
+    ride along automatically — the caller never supplies or sees them.
+    """
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
     try:
-        resp = requests.get(url, timeout=10, allow_redirects=True)
+        resp = requests.get(
+            url, timeout=10, allow_redirects=True, headers=SETTINGS.session_headers or None
+        )
     except requests.RequestException as exc:
         return {"url": url, "error": str(exc)}
     title = None

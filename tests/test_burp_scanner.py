@@ -68,7 +68,7 @@ def test_successful_scan_parses_and_strips_issues(monkeypatch):
     monkeypatch.setattr(requests, "post", lambda *a, **k: post_resp)
     monkeypatch.setattr(requests, "get", lambda *a, **k: get_resp)
 
-    result = burp_mod.burp_scan("example.com", path="/search")
+    result = burp_mod.burp_scan("example.com", paths=["/search"])
 
     assert result["status"] == "succeeded"
     assert result["issue_count"] == 1
@@ -79,6 +79,113 @@ def test_successful_scan_parses_and_strips_issues(monkeypatch):
     assert "<" not in issue["description"]
     assert "  " not in issue["description"]
     assert "reflected unescaped" in issue["description"]
+
+
+def test_multiple_paths_batched_into_one_task(monkeypatch):
+    monkeypatch.setattr(burp_mod, "SETTINGS", Settings(burp_api_url="http://127.0.0.1:1337"))
+
+    post_resp = FakeResponse(
+        status_code=201, headers={"Location": "/v0.1/scan/7"}, url="http://127.0.0.1:1337/v0.1/scan"
+    )
+    get_resp = FakeResponse(status_code=200, json_data={"scan_status": "succeeded", "issue_events": []})
+
+    captured = {}
+
+    def fake_post(url, json=None, **kwargs):
+        captured["body"] = json
+        return post_resp
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(requests, "get", lambda *a, **k: get_resp)
+
+    result = burp_mod.burp_scan("example.com", paths=["/search", "/admin", "api/v1/users"])
+
+    # One task, one urls list with all three paths on the one host.
+    assert captured["body"]["urls"] == [
+        "https://example.com/search",
+        "https://example.com/admin",
+        "https://example.com/api/v1/users",
+    ]
+    assert result["scan_urls"] == captured["body"]["urls"]
+
+
+def test_scan_config_name_forwarded(monkeypatch):
+    monkeypatch.setattr(burp_mod, "SETTINGS", Settings(burp_api_url="http://127.0.0.1:1337"))
+    post_resp = FakeResponse(
+        status_code=201, headers={"Location": "/v0.1/scan/1"}, url="http://127.0.0.1:1337/v0.1/scan"
+    )
+    get_resp = FakeResponse(status_code=200, json_data={"scan_status": "succeeded", "issue_events": []})
+    captured = {}
+
+    def fake_post(url, json=None, **kwargs):
+        captured["body"] = json
+        return post_resp
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(requests, "get", lambda *a, **k: get_resp)
+
+    result = burp_mod.burp_scan("example.com", scan_config_name="authenticated-scan")
+
+    assert captured["body"]["scan_configurations"] == [
+        {"name": "authenticated-scan", "type": "NamedConfiguration"}
+    ]
+    assert result["scan_config_used"] == "authenticated-scan"
+
+
+def test_configured_login_sent_but_never_echoed_back(monkeypatch):
+    monkeypatch.setattr(
+        burp_mod,
+        "SETTINGS",
+        Settings(
+            burp_api_url="http://127.0.0.1:1337",
+            burp_login_username="testuser@example.com",
+            burp_login_password="super-secret-pw",
+        ),
+    )
+    post_resp = FakeResponse(
+        status_code=201, headers={"Location": "/v0.1/scan/1"}, url="http://127.0.0.1:1337/v0.1/scan"
+    )
+    get_resp = FakeResponse(status_code=200, json_data={"scan_status": "succeeded", "issue_events": []})
+    captured = {}
+
+    def fake_post(url, json=None, **kwargs):
+        captured["body"] = json
+        return post_resp
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(requests, "get", lambda *a, **k: get_resp)
+
+    result = burp_mod.burp_scan("example.com")
+
+    # The credential DOES go to Burp itself...
+    assert captured["body"]["application_logins"] == [
+        {"username": "testuser@example.com", "password": "super-secret-pw"}
+    ]
+    # ...but never comes back out in the result (which flows into the LLM
+    # conversation and the saved JSON report).
+    assert result["auto_login_used"] is True
+    result_text = repr(result)
+    assert "super-secret-pw" not in result_text
+    assert "testuser@example.com" not in result_text
+
+
+def test_login_error_body_withheld(monkeypatch):
+    monkeypatch.setattr(
+        burp_mod,
+        "SETTINGS",
+        Settings(
+            burp_api_url="http://127.0.0.1:1337",
+            burp_login_username="testuser",
+            burp_login_password="super-secret-pw",
+        ),
+    )
+    post_resp = FakeResponse(
+        status_code=400, text="bad request for user=testuser pw=super-secret-pw", url="x"
+    )
+    monkeypatch.setattr(requests, "post", lambda *a, **k: post_resp)
+
+    result = burp_mod.burp_scan("example.com")
+    assert "super-secret-pw" not in result["error"]
 
 
 def test_timeout_reports_timed_out_status(monkeypatch):

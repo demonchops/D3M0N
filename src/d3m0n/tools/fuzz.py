@@ -14,6 +14,8 @@ import shutil
 import subprocess
 import tempfile
 
+from d3m0n.config import SETTINGS
+
 _DEFAULT_WORDLIST_CANDIDATES = [
     "/usr/share/seclists/Discovery/Web-Content/common.txt",
     "/usr/share/wordlists/dirb/common.txt",
@@ -27,6 +29,19 @@ _FALLBACK_WORDS = [
     "upload", "uploads", ".env", ".git/config", "robots.txt", "sitemap.xml",
     "swagger.json", "swagger-ui", "graphql", "actuator", "wp-admin",
 ]
+
+
+def _redacted_command(cmd: list[str]) -> str:
+    """Join `cmd` for display, replacing any configured session-header
+    VALUE wherever it appears — see vuln.py's identical helper for why."""
+    secret_values = [v for v in SETTINGS.session_headers.values() if v]
+    parts = []
+    for part in cmd:
+        if any(v in part for v in secret_values):
+            parts.append("***REDACTED-SESSION-HEADER***")
+        else:
+            parts.append(part)
+    return " ".join(parts)
 
 
 def _resolve_wordlist(wordlist: str | None) -> str:
@@ -44,7 +59,8 @@ def _resolve_wordlist(wordlist: str | None) -> str:
 def ffuf_scan(target: str, wordlist: str | None = None, timeout_s: int = 120) -> dict:
     """Fuzz paths on `target` using ffuf (falls back to a tiny built-in wordlist).
 
-    Install: go install github.com/ffuf/ffuf/v2@latest
+    Install: go install github.com/ffuf/ffuf/v2@latest. If D3M0N_SESSION_HEADERS
+    is configured, those headers ride along on every request automatically.
     """
     binary = shutil.which("ffuf")
     if binary is None:
@@ -63,6 +79,8 @@ def ffuf_scan(target: str, wordlist: str | None = None, timeout_s: int = 120) ->
         binary, "-u", url, "-w", wl, "-of", "json", "-o", "-", "-s",
         "-mc", "200,204,301,302,307,401,403",
     ]
+    for name, value in SETTINGS.session_headers.items():
+        cmd += ["-H", f"{name}: {value}"]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, check=False)
     except subprocess.TimeoutExpired:
@@ -78,7 +96,7 @@ def ffuf_scan(target: str, wordlist: str | None = None, timeout_s: int = 120) ->
 
     return {
         "target": target,
-        "command": " ".join(cmd),
+        "command": _redacted_command(cmd),
         "returncode": proc.returncode,
         "hits": hits,
         "count": len(hits),
