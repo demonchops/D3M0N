@@ -75,6 +75,17 @@ class Settings:
     session_headers_b: dict[str, str] = field(
         default_factory=lambda: _parse_session_headers(os.environ.get("D3M0N_SESSION_HEADERS_B"))
     )
+    # idor_check defaults to GET/HEAD/OPTIONS only — read-only, so cross-
+    # session replay can't change anything. POST/PUT/PATCH/DELETE actually
+    # create/modify/delete data under whichever identity sends them, which
+    # is a materially bigger deal than reading another session's data, so
+    # those need this explicit, pre-run human opt-in rather than being
+    # something the agent can just decide to fire mid-run. See
+    # tools/idor_check.py.
+    allow_mutating_idor_checks: bool = (
+        os.environ.get("D3M0N_ALLOW_MUTATING_IDOR_CHECKS", "").strip().lower()
+        in {"1", "true", "yes"}
+    )
 
 
 SETTINGS = Settings()

@@ -185,7 +185,13 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "payload-shaped is refused. Set enumerate_range > 0 to also probe that many "
             "numeric ids either side of the one in the URL (e.g. /orders/4471 with "
             "enumerate_range=5 also tries 4466..4470 and 4472..4476) under the second "
-            "account alone — the standard IDOR-by-enumeration technique. Capped at 10."
+            "account alone, always via GET regardless of `method` — the standard "
+            "IDOR-by-enumeration technique. Capped at 10. `method` defaults to GET; HEAD "
+            "and OPTIONS work the same way (also surfaces the response's Allow header when "
+            "present). POST/PUT/PATCH/DELETE actually change data under whichever identity "
+            "sends them, so they're refused with a clear error unless the operator has set "
+            "D3M0N_ALLOW_MUTATING_IDOR_CHECKS=1 before this run — if you hit that refusal, "
+            "tell the human rather than trying to work around it."
         ),
         "input_schema": {
             "type": "object",
@@ -199,6 +205,27 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "description": (
                         "How many nearby numeric ids to probe either side, default 0 "
                         "(off), capped at 10"
+                    ),
+                },
+                "method": {
+                    "type": "string",
+                    "description": (
+                        "HTTP method: GET (default), HEAD, OPTIONS, POST, PUT, PATCH, "
+                        "DELETE. The last four need D3M0N_ALLOW_MUTATING_IDOR_CHECKS=1 "
+                        "set by the operator ahead of time, or this tool refuses."
+                    ),
+                },
+                "body": {
+                    "type": "string",
+                    "description": (
+                        "Request body for POST/PUT/PATCH/DELETE, e.g. a JSON string. "
+                        "Capped at 20000 characters. Ignored for GET/HEAD/OPTIONS."
+                    ),
+                },
+                "content_type": {
+                    "type": "string",
+                    "description": (
+                        "Content-Type header to send with `body`, default 'application/json'"
                     ),
                 },
             },
@@ -324,7 +351,9 @@ _DISPATCH: dict[str, Callable[..., dict]] = {
     "burp_scan": lambda target, paths=None, scan_config_name=None, **_: burp_scan(
         target, paths, scan_config_name
     ),
-    "idor_check": lambda target, enumerate_range=0, **_: idor_check(target, enumerate_range),
+    "idor_check": lambda target, enumerate_range=0, method="GET", body=None, content_type=None, **_: idor_check(
+        target, enumerate_range, method, body, content_type
+    ),
     "crawl_site": lambda target, scope, max_pages=20, max_depth=2, **_: crawl_site(
         target, scope, max_pages, max_depth
     ),

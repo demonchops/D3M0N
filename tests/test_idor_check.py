@@ -17,6 +17,7 @@ def test_plain_path_id_accepted(monkeypatch):
     class FakeResp:
         status_code = 200
         text = "order #4471"
+        headers = {}
 
     monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResp())
     result = idor_mod.idor_check("https://example.com/api/orders/4471")
@@ -31,6 +32,7 @@ def test_plain_query_id_accepted(monkeypatch):
     class FakeResp:
         status_code = 200
         text = "ok"
+        headers = {}
 
     monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResp())
     result = idor_mod.idor_check("https://example.com/account?user_id=550e8400-e29b-4")
@@ -127,6 +129,7 @@ def test_three_way_comparison_with_similarity(monkeypatch):
         def __init__(self, text, status=200):
             self.text = text
             self.status_code = status
+            self.headers = {}
 
     def fake_get(url, headers=None, **kwargs):
         if headers and headers.get("Cookie") == "session=alice":
@@ -153,6 +156,7 @@ def test_missing_session_b_notes_two_way_only(monkeypatch):
     class FakeResp:
         status_code = 200
         text = "ok"
+        headers = {}
 
     monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResp())
     result = idor_mod.idor_check("https://example.com/api/orders/4471")
@@ -223,6 +227,7 @@ def test_enumerate_range_probes_correct_offsets(monkeypatch):
         def __init__(self, text, status=200):
             self.text = text
             self.status_code = status
+            self.headers = {}
 
     def fake_get(url, headers=None, **kwargs):
         return FakeResp(f"content for {url}")
@@ -249,6 +254,7 @@ def test_enumerate_range_clamped_to_max(monkeypatch):
     class FakeResp:
         status_code = 200
         text = "ok"
+        headers = {}
 
     monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResp())
     result = idor_mod.idor_check("https://example.com/orders/100", enumerate_range=999)
@@ -268,6 +274,7 @@ def test_enumerate_skips_negative_ids(monkeypatch):
     class FakeResp:
         status_code = 200
         text = "ok"
+        headers = {}
 
     monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResp())
     result = idor_mod.idor_check("https://example.com/orders/2", enumerate_range=5)
@@ -287,6 +294,7 @@ def test_enumerate_without_numeric_id_notes_why(monkeypatch):
     class FakeResp:
         status_code = 200
         text = "ok"
+        headers = {}
 
     monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResp())
     result = idor_mod.idor_check(
@@ -305,8 +313,177 @@ def test_enumerate_range_zero_means_off(monkeypatch):
     class FakeResp:
         status_code = 200
         text = "ok"
+        headers = {}
 
     monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResp())
     result = idor_mod.idor_check("https://example.com/orders/100")
 
     assert "enumeration" not in result
+
+
+# --- method support (GET/HEAD/OPTIONS unconditionally, POST/PUT/PATCH/
+# DELETE gated behind SETTINGS.allow_mutating_idor_checks) ---
+
+
+def test_head_method_allowed_without_gate(monkeypatch):
+    monkeypatch.setattr(
+        idor_mod,
+        "SETTINGS",
+        Settings(session_headers={"Cookie": "a=1"}, session_headers_b={}, allow_mutating_idor_checks=False),
+    )
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+        headers = {}
+
+    captured = {}
+
+    def fake_request(method, url, **kwargs):
+        captured["method"] = method
+        return FakeResp()
+
+    monkeypatch.setattr(requests, "request", fake_request)
+    result = idor_mod.idor_check("https://example.com/api/orders/4471", method="head")
+
+    assert "error" not in result["as_session_a"]
+    assert captured["method"] == "HEAD"
+    assert result["method"] == "HEAD"
+
+
+def test_options_method_surfaces_allow_header(monkeypatch):
+    monkeypatch.setattr(
+        idor_mod, "SETTINGS", Settings(session_headers={"Cookie": "a=1"}, session_headers_b={})
+    )
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+        headers = {"Allow": "GET, HEAD, OPTIONS"}
+
+    monkeypatch.setattr(requests, "request", lambda *a, **k: FakeResp())
+    result = idor_mod.idor_check("https://example.com/api/orders/4471", method="OPTIONS")
+
+    assert result["as_session_a"]["allow_header"] == "GET, HEAD, OPTIONS"
+
+
+def test_post_refused_without_gate(monkeypatch):
+    monkeypatch.setattr(
+        idor_mod,
+        "SETTINGS",
+        Settings(session_headers={"Cookie": "a=1"}, session_headers_b={}, allow_mutating_idor_checks=False),
+    )
+
+    def fail(*a, **k):
+        raise AssertionError("must not send a mutating request without the operator opt-in")
+
+    monkeypatch.setattr(requests, "get", fail)
+    monkeypatch.setattr(requests, "request", fail)
+
+    result = idor_mod.idor_check("https://example.com/api/orders/4471", method="POST")
+
+    assert "error" in result
+    assert "D3M0N_ALLOW_MUTATING_IDOR_CHECKS" in result["error"]
+
+
+def test_post_allowed_with_gate_sends_body(monkeypatch):
+    monkeypatch.setattr(
+        idor_mod,
+        "SETTINGS",
+        Settings(
+            session_headers={"Cookie": "session=alice"},
+            session_headers_b={"Cookie": "session=bob"},
+            allow_mutating_idor_checks=True,
+        ),
+    )
+
+    class FakeResp:
+        status_code = 200
+        text = "updated"
+        headers = {}
+
+    captured_calls = []
+
+    def fake_request(method, url, **kwargs):
+        captured_calls.append({"method": method, "url": url, **kwargs})
+        return FakeResp()
+
+    monkeypatch.setattr(requests, "request", fake_request)
+    result = idor_mod.idor_check(
+        "https://example.com/api/orders/4471",
+        method="PATCH",
+        body='{"status": "shipped"}',
+        content_type="application/json",
+    )
+
+    assert "error" not in result["as_session_a"]
+    assert all(c["method"] == "PATCH" for c in captured_calls)
+    assert all(c["data"] == b'{"status": "shipped"}' for c in captured_calls)
+    assert all(c["headers"]["Content-Type"] == "application/json" for c in captured_calls)
+
+
+def test_unknown_method_rejected_without_request(monkeypatch):
+    monkeypatch.setattr(idor_mod, "SETTINGS", Settings(session_headers={"Cookie": "a=1"}))
+
+    def fail(*a, **k):
+        raise AssertionError("must not send a request for an unsupported method")
+
+    monkeypatch.setattr(requests, "get", fail)
+    monkeypatch.setattr(requests, "request", fail)
+
+    result = idor_mod.idor_check("https://example.com/api/orders/4471", method="TRACE")
+    assert "error" in result
+
+
+def test_body_too_large_rejected_without_request(monkeypatch):
+    monkeypatch.setattr(
+        idor_mod,
+        "SETTINGS",
+        Settings(session_headers={"Cookie": "a=1"}, allow_mutating_idor_checks=True),
+    )
+
+    def fail(*a, **k):
+        raise AssertionError("must not send a request when the body exceeds the cap")
+
+    monkeypatch.setattr(requests, "get", fail)
+    monkeypatch.setattr(requests, "request", fail)
+
+    result = idor_mod.idor_check(
+        "https://example.com/api/orders/4471",
+        method="POST",
+        body="x" * (idor_mod.MAX_BODY_CHARS + 1),
+    )
+    assert "error" in result
+
+
+def test_enumeration_always_uses_get_even_with_mutating_base_method(monkeypatch):
+    monkeypatch.setattr(idor_mod.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(
+        idor_mod,
+        "SETTINGS",
+        Settings(
+            session_headers={"Cookie": "session=alice"},
+            session_headers_b={"Cookie": "session=bob"},
+            allow_mutating_idor_checks=True,
+        ),
+    )
+
+    class FakeResp:
+        def __init__(self, text="ok", status=200):
+            self.text = text
+            self.status_code = status
+            self.headers = {}
+
+    monkeypatch.setattr(requests, "request", lambda *a, **k: FakeResp())
+    get_calls = []
+    monkeypatch.setattr(requests, "get", lambda *a, **k: get_calls.append(a) or FakeResp())
+
+    result = idor_mod.idor_check(
+        "https://example.com/orders/100", enumerate_range=2, method="POST", body="{}"
+    )
+
+    # The 3 base requests went via requests.request (POST); every
+    # enumeration probe must have gone via requests.get (always GET),
+    # never requests.request, regardless of the base call's method.
+    assert len(get_calls) == 4  # offsets -2,-1,1,2
+    assert len(result["enumeration"]["probes"]) == 4

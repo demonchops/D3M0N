@@ -294,6 +294,27 @@ scrape of a real target. It only works on a plain numeric id (path
 segment or an `..._id=123`-shaped query value) — not on a UUID, where
 "nearby" isn't a meaningful concept.
 
+**Methods other than GET.** `idor_check` takes an optional `method` —
+`GET` (default), `HEAD`, `OPTIONS`, `POST`, `PUT`, `PATCH`, `DELETE` —
+plus `body`/`content_type` for the ones that carry a body. HEAD and
+OPTIONS behave like GET (read-only, no extra setup; OPTIONS also
+surfaces the response's `Allow` header, which on its own answers "can B
+even PATCH this" without ever sending the PATCH). POST/PUT/PATCH/DELETE
+are a different category: replaying one as session B doesn't just show
+you B's *view* of A's data, it has B actually *create/modify/delete* it —
+a real side effect caused by the test itself. So those four are refused
+with a clear error unless you've explicitly opted in first:
+
+```bash
+export D3M0N_ALLOW_MUTATING_IDOR_CHECKS=1
+```
+
+Off by default, on the same footing as `scope.json`'s `authorized: true`
+— a decision only you make, before the run starts, never something the
+agent decides for itself mid-run. Enumeration (above) always probes via
+GET regardless of `method`, since breadth-first ID discovery and repeated
+mutation are not something you want bundled together.
+
 ## Architecture
 
 ```

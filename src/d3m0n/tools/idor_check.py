@@ -39,6 +39,26 @@ generated URL is re-validated anyway before being requested, rather than
 trusting the substitution code to be bug-free. Capped at
 MAX_ENUMERATE_RANGE either side and paced with a small delay between
 requests, so this can't turn into a rapid-fire scrape of a real target.
+Enumeration always probes via GET regardless of the base call's `method`
+(see below) — breadth-first discovery of which nearby ids respond, never
+repeated mutation.
+
+`method` defaults to GET. HEAD/OPTIONS are allowed with no extra gate,
+since neither can change anything (OPTIONS also surfaces the response's
+`Allow` header when present — useful on its own: "can B even PATCH this
+resource" without ever sending the PATCH). POST/PUT/PATCH/DELETE are a
+different risk tier: replaying one under session B isn't just reading
+B's view of A's data anymore, it's B actually creating/modifying/deleting
+it — a real side effect caused by the test itself, same category of
+mistake as the request-tampering hole once found in http_probe, except
+state-changing instead of read-only. So those four need
+D3M0N_ALLOW_MUTATING_IDOR_CHECKS=1 set by the human operator before the
+run starts — the same kind of explicit, pre-run, config-only gate as
+scope.json's `authorized: true` — rather than being a choice the agent
+can make for itself mid-run. Off by default; refused with a clear error
+(not silently downgraded to GET) when a mutating method is requested
+without it. `body`/`content_type` ride along for POST/PUT/PATCH/DELETE,
+capped at MAX_BODY_CHARS.
 """
 
 from __future__ import annotations
@@ -57,6 +77,13 @@ _SNIPPET_LEN = 300
 _NUMERIC_RE = re.compile(r"^\d+$")
 MAX_ENUMERATE_RANGE = 10
 _ENUMERATE_DELAY_S = 0.3
+
+# GET/HEAD/OPTIONS can't change anything on the server, so they need no
+# extra gate. POST/PUT/PATCH/DELETE can — see the module docstring.
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+_MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_ALL_METHODS = _SAFE_METHODS | _MUTATING_METHODS
+MAX_BODY_CHARS = 20_000
 
 
 def _fully_unquote(s: str, max_rounds: int = 5) -> str:
@@ -150,17 +177,42 @@ def _redact_sessions(text: str) -> str:
     return text
 
 
-def _fetch(url: str, headers: dict[str, str] | None) -> dict:
+def _fetch(
+    url: str,
+    headers: dict[str, str] | None,
+    method: str = "GET",
+    body: str | None = None,
+    content_type: str | None = None,
+) -> dict:
     try:
-        resp = requests.get(url, timeout=10, allow_redirects=True, headers=headers or None)
+        if method == "GET":
+            resp = requests.get(url, timeout=10, allow_redirects=True, headers=headers or None)
+        else:
+            req_headers = dict(headers or {})
+            data = None
+            if body is not None:
+                data = body.encode("utf-8")
+                req_headers.setdefault("Content-Type", content_type or "application/json")
+            resp = requests.request(
+                method,
+                url,
+                data=data,
+                timeout=10,
+                allow_redirects=True,
+                headers=req_headers or None,
+            )
     except requests.RequestException as exc:
         return {"error": _redact_sessions(str(exc))}
-    body = resp.text
-    return {
+    response_body = resp.text
+    result = {
         "status": resp.status_code,
-        "length": len(body),
-        "snippet": _redact_sessions(body[:_SNIPPET_LEN]),
+        "length": len(response_body),
+        "snippet": _redact_sessions(response_body[:_SNIPPET_LEN]),
     }
+    allow_header = resp.headers.get("Allow")
+    if allow_header:
+        result["allow_header"] = allow_header
+    return result
 
 
 def _enumerate_nearby(url: str, original_snippet: str, session_b: dict, enumerate_range: int) -> dict:
@@ -201,11 +253,20 @@ def _enumerate_nearby(url: str, original_snippet: str, session_b: dict, enumerat
     return {"probed_range": clamped, "original_id": original_value, "probes": probes}
 
 
-def idor_check(url: str, enumerate_range: int = 0) -> dict:
+def idor_check(
+    url: str,
+    enumerate_range: int = 0,
+    method: str = "GET",
+    body: str | None = None,
+    content_type: str | None = None,
+) -> dict:
     """Request `url` as session A, session B, and anonymous; return all three.
 
     If `enumerate_range` > 0, also probe nearby numeric ids under session
-    B alone (see module docstring) — capped at MAX_ENUMERATE_RANGE.
+    B alone, always via GET (see module docstring) — capped at
+    MAX_ENUMERATE_RANGE. `method` defaults to GET; POST/PUT/PATCH/DELETE
+    are refused unless SETTINGS.allow_mutating_idor_checks is set (see
+    module docstring for why).
     """
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
@@ -213,6 +274,31 @@ def idor_check(url: str, enumerate_range: int = 0) -> dict:
     validation_error = _validate_identifier_shaped(url)
     if validation_error:
         return {"url": url, "error": validation_error}
+
+    method = (method or "GET").upper()
+    if method not in _ALL_METHODS:
+        return {
+            "url": url,
+            "error": f"idor_check does not support method {method!r}. Supported: "
+            f"{', '.join(sorted(_ALL_METHODS))}.",
+        }
+    if method in _MUTATING_METHODS and not SETTINGS.allow_mutating_idor_checks:
+        return {
+            "url": url,
+            "error": (
+                f"idor_check refuses to send a {method} (state-changing) request: unlike "
+                "GET/HEAD/OPTIONS, this would actually create/modify/delete data under "
+                "each identity it's tried as, not just read it. That needs an explicit, "
+                "pre-run human decision, not something the agent decides mid-run — set "
+                "D3M0N_ALLOW_MUTATING_IDOR_CHECKS=1 before starting the run if you've "
+                "decided that's acceptable for this target, then try again."
+            ),
+        }
+    if body is not None and len(body) > MAX_BODY_CHARS:
+        return {
+            "url": url,
+            "error": f"idor_check's body is capped at {MAX_BODY_CHARS} characters.",
+        }
 
     session_a = SETTINGS.session_headers
     if not session_a:
@@ -224,8 +310,9 @@ def idor_check(url: str, enumerate_range: int = 0) -> dict:
 
     result: dict = {
         "url": url,
-        "as_session_a": _fetch(url, session_a),
-        "as_anonymous": _fetch(url, None),
+        "method": method,
+        "as_session_a": _fetch(url, session_a, method, body, content_type),
+        "as_anonymous": _fetch(url, None, method, body, content_type),
     }
 
     session_b = SETTINGS.session_headers_b
@@ -236,7 +323,7 @@ def idor_check(url: str, enumerate_range: int = 0) -> dict:
         }
         return result
 
-    result["as_session_b"] = _fetch(url, session_b)
+    result["as_session_b"] = _fetch(url, session_b, method, body, content_type)
 
     as_a, as_b = result["as_session_a"], result["as_session_b"]
     if "error" not in as_a and "error" not in as_b:
