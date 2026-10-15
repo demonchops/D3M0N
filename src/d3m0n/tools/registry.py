@@ -124,8 +124,16 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "Burp's own engine finds. Batch every path worth scanning on this host (e.g. ones "
             "ffuf_scan already discovered) into one call via `paths` rather than calling this "
             "once per path. Detection only — never confirms exploitability or sends anything "
-            "beyond what Burp's Scanner sends on its own. Returns a clear error if Burp's REST "
-            "API isn't configured/reachable, or if you're on Community Edition (no Scanner there)."
+            "beyond what Burp's Scanner sends on its own. Each issue has a severity_score "
+            "(4=critical..0=information, alongside Burp's own severity string), a context "
+            "block (best-effort request method/path, response status, a sanitized response "
+            "snippet pulled from its evidence), and minified_content_warning (the "
+            "description/remediation/response snippet looked minified — informational, not a "
+            "confidence signal). scan_metadata reports what this call actually used: "
+            "scan_config_name, an explicit authenticated/auth_method flag, paths_requested, "
+            "and whatever scan_metrics Burp itself reports. Returns a clear error if Burp's "
+            "REST API isn't configured/reachable, or if you're on Community Edition (no "
+            "Scanner there)."
         ),
         "input_schema": {
             "type": "object",

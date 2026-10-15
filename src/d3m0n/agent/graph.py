@@ -133,7 +133,13 @@ def _short_note(tool_name: str, result: dict) -> str:
     if tool_name == "tls_info":
         return f"expires in {result.get('expires_in_days')}d"
     if tool_name == "burp_scan":
-        return f"{result.get('issue_count', 0)} Burp issues ({result.get('status')})"
+        note = f"{result.get('issue_count', 0)} Burp issues ({result.get('status')})"
+        high_or_above = sum(
+            1 for i in result.get("issues", []) if (i.get("severity_score") or 0) >= 3
+        )
+        if high_or_above:
+            note += f", {high_or_above} high/critical"
+        return note
     if tool_name == "burp_traffic_review":
         return f"{result.get('items_flagged', 0)} flagged of {result.get('items_total', 0)}"
     if tool_name == "idor_check":

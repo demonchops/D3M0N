@@ -251,6 +251,32 @@ model to reference it.
 worth scanning on a host (e.g. everything `ffuf_scan` just discovered) into
 one Burp task instead of one call per path.
 
+### `burp_scan`'s structured output
+
+Each returned issue is a stable object, not just whatever Burp happened to
+send: `severity_score` normalizes Burp's severity string to an integer
+(4=critical, 3=high, 2=medium, 1=low, 0=information — `None` if Burp
+reports something this doesn't recognize, rather than guessing) alongside
+the original `severity` string; `context` is a best-effort request
+method/path, response status, and a small sanitized response-body snippet
+pulled from the issue's own evidence (useful because an issue's evidence
+can literally BE the vulnerable request/response, e.g. the exact login POST
+for a CSRF-on-login-form finding); `minified_content_warning` flags when
+the description, remediation, or that response snippet looks minified
+(same heuristic as `js_secrets_scan`) — informational, so dense-looking
+content doesn't read as corrupted. A top-level `scan_metadata` block
+reports what the call actually used — `scan_config_name`, an explicit
+`authenticated`/`auth_method` flag, `paths_requested`, and whatever
+`scan_metrics` Burp itself reports for the run.
+
+Every piece of Burp-sourced text (errors, issue descriptions/remediation,
+and the evidence-derived context) is redacted for the Burp REST API key,
+the configured Burp login username/password, and — defense in depth — any
+configured `D3M0N_SESSION_HEADERS` value, before being truncated. The
+login-request evidence case above is the likeliest real leak path for the
+login password specifically, which is exactly why this redaction has to
+reach into `context`, not just the top-level error strings.
+
 ### Broken access control / IDOR (`idor_check`)
 
 Everything above tests one identity's own access. IDOR/broken access
