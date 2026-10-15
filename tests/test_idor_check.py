@@ -487,3 +487,80 @@ def test_enumeration_always_uses_get_even_with_mutating_base_method(monkeypatch)
     # never requests.request, regardless of the base call's method.
     assert len(get_calls) == 4  # offsets -2,-1,1,2
     assert len(result["enumeration"]["probes"]) == 4
+    # The baseline snippet enumeration compares against came from the
+    # POST, not a GET -- the result must say so rather than let the
+    # similarity score look more meaningful than it is.
+    assert "note_baseline_method" in result["enumeration"]
+
+
+def test_enumeration_with_get_base_method_has_no_baseline_warning(monkeypatch):
+    monkeypatch.setattr(idor_mod.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(
+        idor_mod,
+        "SETTINGS",
+        Settings(session_headers={"Cookie": "a=1"}, session_headers_b={"Cookie": "b=1"}),
+    )
+
+    class FakeResp:
+        status_code = 200
+        text = "ok"
+        headers = {}
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResp())
+    result = idor_mod.idor_check("https://example.com/orders/100", enumerate_range=2)
+
+    assert "note_baseline_method" not in result["enumeration"]
+
+
+def test_head_with_body_does_not_send_body(monkeypatch):
+    # HEAD/OPTIONS are documented (schema + README) as never carrying a
+    # body. A caller passing one anyway must not have it silently
+    # attached to the real request.
+    monkeypatch.setattr(
+        idor_mod, "SETTINGS", Settings(session_headers={"Cookie": "a=1"}, session_headers_b={})
+    )
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+        headers = {}
+
+    captured = []
+
+    def fake_request(method, url, **kwargs):
+        captured.append(kwargs)
+        return FakeResp()
+
+    monkeypatch.setattr(requests, "request", fake_request)
+    result = idor_mod.idor_check(
+        "https://example.com/api/orders/4471", method="HEAD", body='{"sneaky": true}'
+    )
+
+    assert "error" not in result["as_session_a"]
+    assert all("data" not in kw or kw["data"] is None for kw in captured)
+    assert all("Content-Type" not in (kw.get("headers") or {}) for kw in captured)
+
+
+def test_options_with_body_does_not_send_body(monkeypatch):
+    monkeypatch.setattr(
+        idor_mod, "SETTINGS", Settings(session_headers={"Cookie": "a=1"}, session_headers_b={})
+    )
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+        headers = {"Allow": "GET, OPTIONS"}
+
+    captured = []
+
+    def fake_request(method, url, **kwargs):
+        captured.append(kwargs)
+        return FakeResp()
+
+    monkeypatch.setattr(requests, "request", fake_request)
+    result = idor_mod.idor_check(
+        "https://example.com/api/orders/4471", method="OPTIONS", body="irrelevant"
+    )
+
+    assert result["as_session_a"]["allow_header"] == "GET, OPTIONS"
+    assert all("data" not in kw or kw["data"] is None for kw in captured)

@@ -187,7 +187,12 @@ def _fetch(
     try:
         if method == "GET":
             resp = requests.get(url, timeout=10, allow_redirects=True, headers=headers or None)
-        else:
+        elif method in _SAFE_METHODS:  # HEAD, OPTIONS -- never carry a body, whatever
+            # the caller passed in; documented (schema + README) as ignored for these.
+            resp = requests.request(
+                method, url, timeout=10, allow_redirects=True, headers=headers or None
+            )
+        else:  # POST, PUT, PATCH, DELETE
             req_headers = dict(headers or {})
             data = None
             if body is not None:
@@ -335,5 +340,21 @@ def idor_check(
         result["enumeration"] = _enumerate_nearby(
             url, as_a.get("snippet", ""), session_b, enumerate_range
         )
+        if method != "GET":
+            # Enumeration probes are always GET (see module docstring), but
+            # the "original" snippet they're compared against is session
+            # A's response to THIS call's own method. For a mutating
+            # method that's often a generic confirmation body (e.g. the
+            # same '{"status": "updated"}' for every id), which can look
+            # artificially "similar" to every probed id regardless of
+            # whether it's actually a real/accessible resource — so flag
+            # that mismatch instead of letting a misleading number pass
+            # for a meaningful one.
+            result["enumeration"]["note_baseline_method"] = (
+                f"original_snippet/similarity_to_original above is compared against "
+                f"session A's {method} response, not a GET — enumeration probes are "
+                "always GET. A generic mutation-confirmation body can look artificially "
+                "similar across every id; weigh status codes over the similarity score here."
+            )
 
     return result
