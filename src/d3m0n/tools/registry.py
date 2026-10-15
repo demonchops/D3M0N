@@ -264,9 +264,18 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "description": (
             "Fetch one JS (or any text) file and check it against a fixed set of secret/"
             "hidden-endpoint patterns (AWS/Google/Slack keys, JWTs, private key headers, "
-            "generic api_key-shaped assignments, embedded /api//internal//admin/ paths). A "
-            "match is a lead worth manual verification — it could be a placeholder/example "
-            "value — not a confirmed exposure. Feed it script URLs crawl_site discovers."
+            "generic api_key-shaped assignments, embedded /api//internal//admin/ paths). "
+            "Each kept finding has a confidence (high/medium/low, downgraded when the "
+            "matched value's entropy looks too low to be real random secret data), the "
+            "entropy score itself (null where it isn't a meaningful signal, e.g. a private "
+            "key header or a path), a position (character offset) and a context snippet "
+            "(~50 chars either side, one line). Obvious placeholders/examples (keyword- or "
+            "structure-matched, e.g. 'your-api-key', repeated characters, sequential runs) "
+            "are excluded from `findings` but never silently dropped — see "
+            "filtered_placeholder_count/examples. minified_heuristic describes the fetched "
+            "body's own line/whitespace shape (informational, not a confidence input). A "
+            "match is still a lead worth manual verification, not a confirmed exposure. "
+            "Feed it script URLs crawl_site discovers."
         ),
         "input_schema": {
             "type": "object",

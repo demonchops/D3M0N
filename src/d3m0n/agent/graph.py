@@ -146,7 +146,14 @@ def _short_note(tool_name: str, result: dict) -> str:
     if tool_name == "crawl_site":
         return f"{result.get('pages_visited', 0)} pages, {len(result.get('forms_found', []))} forms"
     if tool_name == "js_secrets_scan":
-        return f"{result.get('finding_count', 0)} pattern matches"
+        high = sum(1 for f in result.get("findings", []) if f.get("confidence") == "high")
+        note = f"{result.get('finding_count', 0)} pattern matches"
+        if high:
+            note += f" ({high} high-confidence)"
+        filtered = result.get("filtered_placeholder_count", 0)
+        if filtered:
+            note += f", {filtered} placeholders filtered"
+        return note
     if tool_name == "graphql_introspect":
         return "introspection ENABLED" if result.get("introspection_enabled") else "introspection off"
     if tool_name == "cors_check":

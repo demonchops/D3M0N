@@ -381,7 +381,15 @@ tests/
 - `crawl_site` — bounded, in-scope, GET-only crawl; discovers pages/forms/JS
   files to feed the other tools instead of guessing at paths
 - `js_secrets_scan` — fixed-pattern scan of a JS/text file for leaked keys,
-  JWTs, private key headers, embedded hidden API paths
+  JWTs, private key headers, embedded hidden API paths. Each kept finding
+  carries a confidence (high/medium/low, downgraded when the value's
+  entropy looks too low to be real random secret data), the entropy score,
+  a character position, and a context snippet. Obvious placeholders
+  ("your-api-key", repeated characters, sequential runs) are excluded from
+  the main findings but reported in `filtered_placeholder_count`/
+  `_examples` rather than silently dropped. `minified_heuristic` reports the
+  fetched body's own line-length/whitespace shape (informational — it's
+  why `context` is always a character window, never "the enclosing line")
 - `graphql_introspect` — checks whether a GraphQL endpoint's introspection
   is open, and summarizes the schema if so
 - `cors_check` — sends a fixed set of Origin header values and flags
