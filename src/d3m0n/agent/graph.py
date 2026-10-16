@@ -308,10 +308,16 @@ def build_graph(scope: Scope, event_log: EventLog | None = None, methodology_dir
         return state
 
     def should_continue(state: AgentState) -> str:
+        # A conditional-edge function only decides routing -- LangGraph
+        # merges state updates from NODE return values, not from a
+        # mutation made inside a routing function, so setting
+        # state["summary"] here (as this used to) silently never took
+        # effect in the state run_agent() actually gets back. The same
+        # fallback is set in run_agent() instead, right after
+        # compiled.invoke() returns, which is a value it reliably owns.
         if state["done"]:
             return "end"
         if state["step"] >= state["max_steps"]:
-            state["summary"] = state.get("summary") or "Stopped: step budget exhausted."
             return "end"
         return "continue"
 
@@ -361,6 +367,13 @@ def run_agent(
         "summary_before_critic": None,
     }
     final_state = compiled.invoke(initial)
+
+    if not final_state.get("done") and not final_state.get("summary"):
+        # The run hit should_continue's step-budget cutoff without the
+        # model ever calling finish (e.g. it kept returning plain text
+        # with no tool call) -- see should_continue's comment for why
+        # this fallback has to live here rather than there.
+        final_state["summary"] = "Stopped: step budget exhausted."
 
     if use_critic_pass and final_state.get("summary"):
         original_summary = final_state["summary"]
