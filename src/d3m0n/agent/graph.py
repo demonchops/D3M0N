@@ -1,8 +1,27 @@
 """The plan -> act -> observe -> decide loop, built on LangGraph.
 
 Claude does the planning (via tool use); `tools.registry.run_tool` does the
-acting, with scope enforcement as the hard boundary around what Claude's
-plan is actually allowed to touch.
+acting, with a PolicyEngine (policy.py) as the hard boundary around what
+Claude's plan is actually allowed to touch.
+
+Each turn of the loop is three named steps, in order:
+  Planner    (_planner_step)      ask the model what to do next
+  ToolRouter (_tool_router)        dispatch what it proposed, concurrently
+  ResultInterpreter (_result_interpreter)  turn outcomes into tool_results,
+                                            findings, and event-log entries
+
+These are three separate, independently-testable FUNCTIONS, called in
+sequence from ONE LangGraph node (`plan_and_act`) — deliberately not
+three separate graph nodes. Splitting them into real graph nodes would
+mean threading the model's in-flight proposed tool calls and their raw
+outcomes through AgentState as new transient fields, which (a) only
+works in-memory today because nothing here is serialized between nodes
+(add a checkpointer later and those fields would need to become plain
+JSON-able dicts, not raw SDK block objects) and (b) buys little beyond
+cosmetic graph shape, since nothing here currently uses LangGraph's own
+per-node checkpointing/visualization. Named functions get the same
+clarity and testability without that risk to the most exercised part of
+this project.
 
 Two efficiency features live here, on top of a plain linear loop:
 
@@ -121,6 +140,90 @@ def _run_one(call, scope: Scope) -> tuple[dict | None, OutOfScopeError | None]:
         return None, exc
 
 
+def _planner_step(client, state: AgentState):
+    """The Planner: ask the model what to do next given the conversation
+    so far, and record its raw response into state. Returns the raw
+    response object (its .content list of blocks) so the caller can
+    decide what, if anything, needs executing."""
+    _set_cache_breakpoint(state)
+    response = client.messages.create(
+        model=SETTINGS.model,
+        max_tokens=3072,
+        system=_SYSTEM_BLOCKS,
+        tools=_TOOLS_WITH_CACHE,
+        messages=state["messages"],
+    )
+    assistant_content = [block.model_dump() for block in response.content]
+    state["messages"].append({"role": "assistant", "content": assistant_content})
+    state["step"] += 1
+    return response
+
+
+def _tool_router(exec_calls: list, scope: Scope) -> list[tuple[dict | None, OutOfScopeError | None]]:
+    """The ToolRouter: dispatch every non-finish tool call the Planner
+    just proposed, through registry.run_tool() (which itself gates every
+    call through a PolicyEngine — see policy.py). Independent calls the
+    model batched into one turn run concurrently, since they're all
+    I/O-bound (sockets/subprocesses) — a real wall-clock win, not just
+    bookkeeping."""
+    if not exec_calls:
+        return []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(exec_calls))) as pool:
+        return list(pool.map(lambda c: _run_one(c, scope), exec_calls))
+
+
+def _result_interpreter(
+    exec_calls: list,
+    exec_outcomes: list[tuple[dict | None, OutOfScopeError | None]],
+    finish_call,
+    state: AgentState,
+    event_log: EventLog | None,
+) -> list[dict]:
+    """The ResultInterpreter: turn the ToolRouter's raw outcomes into the
+    tool_result content blocks the model sees next, record each
+    successful call as a finding, and log every outcome. Also handles
+    the finish call's bookkeeping (state["done"]/state["summary"]),
+    since that's just one more kind of result to interpret."""
+    tool_results = []
+    for call, (result, exc) in zip(exec_calls, exec_outcomes):
+        target = call.input.get("target", "")
+        if exc is not None:
+            content = f"BLOCKED by scope enforcement: {exc}"
+            if event_log is not None:
+                event_log.emit(
+                    "tool_done",
+                    step=state["step"],
+                    tool=call.name,
+                    target=target,
+                    ok=False,
+                    note="blocked by scope enforcement",
+                )
+        else:
+            state["findings"].append({"tool": call.name, "input": call.input, "result": result})
+            content = _summarize_result(result)
+            if event_log is not None:
+                ok = "error" not in result
+                note = str(result.get("error", "")) if not ok else _short_note(call.name, result)
+                event_log.emit(
+                    "tool_done",
+                    step=state["step"],
+                    tool=call.name,
+                    target=target,
+                    ok=ok,
+                    note=note[:120],
+                )
+        tool_results.append({"type": "tool_result", "tool_use_id": call.id, "content": content})
+
+    if finish_call is not None:
+        state["done"] = True
+        state["summary"] = finish_call.input.get("summary", "")
+        tool_results.append(
+            {"type": "tool_result", "tool_use_id": finish_call.id, "content": "Run finished."}
+        )
+
+    return tool_results
+
+
 def _short_note(tool_name: str, result: dict) -> str:
     """One-line human summary of a successful tool result, for the live TUI."""
     if tool_name == "subfinder_scan":
@@ -226,6 +329,10 @@ def build_graph(scope: Scope, event_log: EventLog | None = None, methodology_dir
     client = _client()
 
     def plan_and_act(state: AgentState) -> AgentState:
+        """One turn of the loop: Planner -> ToolRouter -> ResultInterpreter.
+        Deliberately one LangGraph node calling three named functions in
+        sequence, not three separate graph nodes — see the module
+        docstring for why."""
         if state["step"] == 0:
             state["messages"].append(
                 {
@@ -236,19 +343,7 @@ def build_graph(scope: Scope, event_log: EventLog | None = None, methodology_dir
                 }
             )
 
-        _set_cache_breakpoint(state)
-
-        response = client.messages.create(
-            model=SETTINGS.model,
-            max_tokens=3072,
-            system=_SYSTEM_BLOCKS,
-            tools=_TOOLS_WITH_CACHE,
-            messages=state["messages"],
-        )
-
-        assistant_content = [block.model_dump() for block in response.content]
-        state["messages"].append({"role": "assistant", "content": assistant_content})
-        state["step"] += 1
+        response = _planner_step(client, state)
 
         tool_uses = [b for b in response.content if b.type == "tool_use"]
         if not tool_uses:
@@ -267,42 +362,8 @@ def build_graph(scope: Scope, event_log: EventLog | None = None, methodology_dir
                 tools=[{"name": c.name, "target": c.input.get("target", "")} for c in exec_calls],
             )
 
-        # Independent calls the model batched into this one turn run
-        # concurrently — they're all I/O-bound (sockets/subprocesses), so
-        # this is a real wall-clock win, not just bookkeeping.
-        exec_outcomes: list[tuple[dict | None, OutOfScopeError | None]] = []
-        if exec_calls:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(exec_calls))) as pool:
-                exec_outcomes = list(pool.map(lambda c: _run_one(c, scope), exec_calls))
-
-        tool_results = []
-        for call, (result, exc) in zip(exec_calls, exec_outcomes):
-            target = call.input.get("target", "")
-            if exc is not None:
-                content = f"BLOCKED by scope enforcement: {exc}"
-                if event_log is not None:
-                    event_log.emit(
-                        "tool_done", step=state["step"], tool=call.name, target=target,
-                        ok=False, note="blocked by scope enforcement",
-                    )
-            else:
-                state["findings"].append({"tool": call.name, "input": call.input, "result": result})
-                content = _summarize_result(result)
-                if event_log is not None:
-                    ok = "error" not in result
-                    note = str(result.get("error", "")) if not ok else _short_note(call.name, result)
-                    event_log.emit(
-                        "tool_done", step=state["step"], tool=call.name, target=target,
-                        ok=ok, note=note[:120],
-                    )
-            tool_results.append({"type": "tool_result", "tool_use_id": call.id, "content": content})
-
-        if finish_call is not None:
-            state["done"] = True
-            state["summary"] = finish_call.input.get("summary", "")
-            tool_results.append(
-                {"type": "tool_result", "tool_use_id": finish_call.id, "content": "Run finished."}
-            )
+        exec_outcomes = _tool_router(exec_calls, scope)
+        tool_results = _result_interpreter(exec_calls, exec_outcomes, finish_call, state, event_log)
 
         state["messages"].append({"role": "user", "content": tool_results})
         return state

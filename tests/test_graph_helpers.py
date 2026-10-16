@@ -195,3 +195,117 @@ def test_run_agent_summary_without_secrets_unaffected(monkeypatch):
     final_state = graph_mod.run_agent("objective", "example.com", max_steps=1, live_events=False)
 
     assert final_state["summary"] == "Nothing sensitive here."
+
+
+# --- the three named per-turn functions, tested in isolation ---
+
+
+class _BlockResponse:
+    def __init__(self, blocks):
+        self.content = blocks
+
+
+class _BlockMessages:
+    def __init__(self, blocks):
+        self._blocks = blocks
+
+    def create(self, **kwargs):
+        return _BlockResponse(self._blocks)
+
+
+class _BlockClient:
+    def __init__(self, blocks):
+        self.messages = _BlockMessages(blocks)
+
+
+def test_planner_step_appends_assistant_message_and_increments_step():
+    state = {"messages": [{"role": "user", "content": "go"}], "step": 0, "cache_breakpoint": None}
+    client = _BlockClient([Block(type="text", text="thinking out loud")])
+
+    response = graph_mod._planner_step(client, state)
+
+    assert response.content[0].text == "thinking out loud"
+    assert state["step"] == 1
+    assert state["messages"][-1]["role"] == "assistant"
+    assert state["messages"][-1]["content"] == [{"type": "text", "text": "thinking out loud"}]
+
+
+def test_tool_router_empty_calls_returns_empty_without_threadpool(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("must not touch the thread pool for zero calls")
+
+    monkeypatch.setattr(graph_mod.concurrent.futures, "ThreadPoolExecutor", boom)
+    assert graph_mod._tool_router([], scope=None) == []
+
+
+def test_tool_router_dispatches_each_call_and_preserves_order(monkeypatch):
+    calls = [Block(type="tool_use", id=f"c{i}", name="dns_lookup", input={"target": f"h{i}.com"}) for i in range(4)]
+
+    def fake_run_one(call, scope):
+        return ({"hostname": call.input["target"]}, None)
+
+    monkeypatch.setattr(graph_mod, "_run_one", fake_run_one)
+    outcomes = graph_mod._tool_router(calls, scope="fake-scope")
+
+    assert [o[0]["hostname"] for o in outcomes] == ["h0.com", "h1.com", "h2.com", "h3.com"]
+
+
+class _RecordingEventLog:
+    def __init__(self):
+        self.events = []
+
+    def emit(self, event_type, **fields):
+        self.events.append({"type": event_type, **fields})
+
+
+def test_result_interpreter_records_finding_and_summarized_content():
+    call = Block(type="tool_use", id="c1", name="dns_lookup", input={"target": "example.com"})
+    state = {"findings": [], "step": 1}
+    event_log = _RecordingEventLog()
+
+    tool_results = graph_mod._result_interpreter(
+        [call], [({"hostname": "example.com"}, None)], None, state, event_log
+    )
+
+    assert len(state["findings"]) == 1
+    assert state["findings"][0]["tool"] == "dns_lookup"
+    assert tool_results == [
+        {"type": "tool_result", "tool_use_id": "c1", "content": "{'hostname': 'example.com'}"}
+    ]
+    tool_done = next(e for e in event_log.events if e["type"] == "tool_done")
+    assert tool_done["ok"] is True
+
+
+def test_result_interpreter_blocked_call_not_a_finding():
+    from d3m0n.safety import OutOfScopeError
+
+    call = Block(type="tool_use", id="c1", name="dns_lookup", input={"target": "evil.com"})
+    state = {"findings": [], "step": 1}
+    event_log = _RecordingEventLog()
+
+    tool_results = graph_mod._result_interpreter(
+        [call], [(None, OutOfScopeError("nope"))], None, state, event_log
+    )
+
+    assert state["findings"] == []
+    assert "BLOCKED by scope enforcement" in tool_results[0]["content"]
+    tool_done = next(e for e in event_log.events if e["type"] == "tool_done")
+    assert tool_done["ok"] is False
+
+
+def test_result_interpreter_finish_call_sets_done_and_summary():
+    finish_call = Block(type="tool_use", id="c2", name="finish", input={"summary": "all done"})
+    state = {"findings": [], "step": 1, "done": False, "summary": None}
+
+    tool_results = graph_mod._result_interpreter([], [], finish_call, state, None)
+
+    assert state["done"] is True
+    assert state["summary"] == "all done"
+    assert {"type": "tool_result", "tool_use_id": "c2", "content": "Run finished."} in tool_results
+
+
+def test_result_interpreter_works_with_no_event_log():
+    call = Block(type="tool_use", id="c1", name="dns_lookup", input={"target": "example.com"})
+    state = {"findings": [], "step": 1}
+    # Must not raise with event_log=None (the live_events=False case).
+    graph_mod._result_interpreter([call], [({"hostname": "example.com"}, None)], None, state, None)
