@@ -160,7 +160,9 @@ stopping at the first interesting thing it notices:
    paths/forms/JS files instead of guessing.
 3. **Detect**: `nuclei_scan` and `burp_scan` (batching every discovered path
    into one call) on every live host; `js_secrets_scan` every discovered JS
-   file; `graphql_introspect` anything that looks like GraphQL.
+   file; `graphql_introspect` anything that looks like GraphQL;
+   `security_headers_check` every live host for HSTS/CSP/clickjacking/
+   cookie-attribute weaknesses.
 4. **Access control**: `idor_check` (with `enumerate_range` set on numeric
    ids) on every resource-shaped URL found while browsing authenticated
    content.
@@ -368,6 +370,7 @@ src/d3m0n/
     js_secrets.py       fixed-pattern secrets/endpoint scan of a JS file
     graphql.py          GraphQL introspection check
     cors_check.py       CORS misconfiguration probe
+    security_headers.py HSTS/CSP/clickjacking/cookie-attribute check
     takeover_check.py   subdomain takeover (CNAME + fingerprint) check
     report.py         writes the findings report to disk
 tui/                Go module: the live dashboard (see "Live TUI" above)
@@ -421,6 +424,11 @@ tests/
 - `cors_check` — sends a fixed set of Origin header values and flags
   reflected-arbitrary-origin, null-origin, and naive prefix/suffix
   allowlist patterns in the response's Access-Control-Allow-* headers
+- `security_headers_check` — checks HSTS/CSP/X-Content-Type-Options/
+  Referrer-Policy/Permissions-Policy and every Set-Cookie header's Secure/
+  HttpOnly/SameSite attributes; each finding has a severity and a `why`.
+  `clickjacking` is an explicit verdict combining X-Frame-Options and CSP's
+  `frame-ancestors` (either one alone prevents framing)
 - `subdomain_takeover_check` — checks a subdomain's CNAME against known
   takeover-prone providers (GitHub Pages, S3, Heroku, Azure, Shopify, and
   others) and, if matched, checks the response body for that provider's

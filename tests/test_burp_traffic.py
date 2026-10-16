@@ -107,6 +107,47 @@ def test_cookie_missing_secure_httponly_flagged(tmp_path):
     assert any("Secure" in f for f in result["flagged"][0]["flags"])
 
 
+def test_cookie_name_containing_flag_word_still_flagged(tmp_path):
+    # A cookie literally NAMED "securetoken", with HttpOnly genuinely set
+    # but Secure genuinely NOT set, isolates the bug: a raw substring
+    # search finds "secure" in the NAME and wrongly concludes the Secure
+    # ATTRIBUTE is present, and since HttpOnly really is there too, the
+    # old `or`-based check had nothing left to catch it on.
+    scope = parse_scope("example.com")
+    response = (
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Security-Policy: default-src 'self'\r\n"
+        b"X-Frame-Options: DENY\r\n"
+        b"Strict-Transport-Security: max-age=31536000\r\n"
+        b"X-Content-Type-Options: nosniff\r\n"
+        b"Set-Cookie: securetoken=abc123; Path=/; HttpOnly\r\n"
+        b"\r\n<html>ok</html>"
+    )
+    export = _write_export(tmp_path, [_item("good.example.com", "/login", response)])
+
+    result = burp_traffic_review(export, scope)
+
+    assert result["items_flagged"] == 1
+    assert any("Secure" in f for f in result["flagged"][0]["flags"])
+
+
+def test_cookie_with_real_secure_httponly_attributes_not_flagged(tmp_path):
+    scope = parse_scope("example.com")
+    response = (
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Security-Policy: default-src 'self'\r\n"
+        b"X-Frame-Options: DENY\r\n"
+        b"Strict-Transport-Security: max-age=31536000\r\n"
+        b"X-Content-Type-Options: nosniff\r\n"
+        b"Set-Cookie: session=abc123; Path=/; Secure; HttpOnly\r\n"
+        b"\r\n<html>ok</html>"
+    )
+    export = _write_export(tmp_path, [_item("good.example.com", "/login", response)])
+
+    result = burp_traffic_review(export, scope)
+    assert result["items_flagged"] == 0
+
+
 def test_malformed_file_returns_error_not_exception(tmp_path):
     scope = parse_scope("example.com")
     path = tmp_path / "bad.xml"

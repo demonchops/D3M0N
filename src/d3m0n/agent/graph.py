@@ -165,6 +165,11 @@ def _short_note(tool_name: str, result: dict) -> str:
     if tool_name == "cors_check":
         flags = result.get("flags", [])
         return f"{len(flags)} CORS flags: {', '.join(flags)}" if flags else "no CORS flags"
+    if tool_name == "security_headers_check":
+        note = f"{result.get('finding_count', 0)} header findings"
+        if result.get("clickjacking", {}).get("likely_frameable"):
+            note += ", likely frameable"
+        return note
     if tool_name == "subdomain_takeover_check":
         if not result.get("matches_known_service"):
             return "no known-provider CNAME"

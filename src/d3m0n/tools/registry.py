@@ -20,6 +20,7 @@ from d3m0n.tools.idor_check import idor_check
 from d3m0n.tools.js_secrets import js_secrets_scan
 from d3m0n.tools.recon import dns_lookup, http_probe, tls_info
 from d3m0n.tools.scan import nmap_scan
+from d3m0n.tools.security_headers import security_headers_check
 from d3m0n.tools.subdomain import subfinder_scan
 from d3m0n.tools.takeover_check import subdomain_takeover_check
 from d3m0n.tools.vuln import nuclei_scan
@@ -325,6 +326,27 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "security_headers_check",
+        "description": (
+            "GET a URL and check its response against a fixed set of well-known security "
+            "headers (HSTS, CSP, X-Content-Type-Options, X-Frame-Options, Referrer-Policy, "
+            "Permissions-Policy) plus every Set-Cookie header's Secure/HttpOnly/SameSite "
+            "attributes, plus whether the page was served over plain HTTP at all. Each "
+            "finding has a severity (high/medium/low/info) and a `why`. `clickjacking` is "
+            "an explicit top-level verdict: X-Frame-Options and CSP's frame-ancestors "
+            "directive are checked together, since either alone prevents framing in "
+            "current browsers. Sends nothing but a single plain GET — no crafted payloads, "
+            "nothing model-composed. Flags, not verdicts: a missing header is a real, "
+            "commonly documented weakness, but whether it matters for this specific target "
+            "needs human judgment this tool doesn't have context for."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"target": {"type": "string", "description": "URL or hostname"}},
+            "required": ["target"],
+        },
+    },
+    {
         "name": "subdomain_takeover_check",
         "description": (
             "Check whether a subdomain's CNAME points at a known takeover-prone provider "
@@ -377,6 +399,7 @@ _DISPATCH: dict[str, Callable[..., dict]] = {
     "js_secrets_scan": lambda target, **_: js_secrets_scan(target),
     "graphql_introspect": lambda target, **_: graphql_introspect(target),
     "cors_check": lambda target, **_: cors_check(target),
+    "security_headers_check": lambda target, **_: security_headers_check(target),
     "subdomain_takeover_check": lambda target, **_: subdomain_takeover_check(target),
     "burp_traffic_review": lambda target, export_path, scope, **_: burp_traffic_review(
         export_path, scope

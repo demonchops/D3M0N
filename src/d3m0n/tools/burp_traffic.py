@@ -143,7 +143,14 @@ def _flag_item(path: str, response: bytes) -> list[str]:
 
     cookie_lines = [line for line in header_block.splitlines() if line.startswith("set-cookie:")]
     for cookie_line in cookie_lines:
-        if "secure" not in cookie_line or "httponly" not in cookie_line:
+        # Strip the "set-cookie:" prefix and the "name=value" piece, then
+        # check ATTRIBUTE TOKENS specifically -- header_block is already
+        # lowercased, but a raw substring search across the whole line
+        # would still wrongly treat e.g. a cookie literally named
+        # "secure_session" as if the Secure flag were present.
+        _, _, cookie_value = cookie_line.partition(":")
+        attr_names = {part.split("=", 1)[0].strip() for part in cookie_value.split(";")[1:]}
+        if "secure" not in attr_names or "httponly" not in attr_names:
             flags.append("Set-Cookie missing Secure and/or HttpOnly")
             break
 
