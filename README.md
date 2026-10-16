@@ -202,12 +202,23 @@ stopping at the first interesting thing it notices:
 
 It also raises the step budget (to 60, unless you've explicitly set
 `--max-steps` yourself — an explicit value is always respected, never
-second-guessed) and adds a **skeptical self-review pass**: one extra,
-separate Claude call that reads the draft summary against the actual raw
-tool findings and revises anything that reads more confident than the
-evidence supports before the report is written. If it revises anything,
-both versions are saved (`summary` and `summary_before_critic_self_review`
-in the JSON report) so you can see what got toned down and why.
+second-guessed) and adds two extra, separate one-shot Claude calls after
+the main run, neither of which can break a run that otherwise succeeded —
+each falls back gracefully on its own failure:
+
+- A **skeptical self-review pass**: reads the draft summary against the
+  actual raw tool findings and revises anything that reads more confident
+  than the evidence supports before the report is written. If it revises
+  anything, both versions are saved (`summary` and
+  `summary_before_critic_self_review` in the JSON report) so you can see
+  what got toned down and why.
+- A **DefenseMapper pass**: turns the run's findings into short, concrete
+  remediation + detection-rule suggestions — a specific config/code/header
+  change to make, and a specific log pattern or alert rule to catch it
+  again — saved as `defense_recommendations` in the JSON report. If
+  generation fails (a bad response, an unreachable backend), it saves
+  `generation_error` instead of silently implying there was nothing to
+  flag.
 
 **Calibrating expectations:** this runs the real methodology more
 exhaustively and more systematically than hand-crafting an objective
@@ -387,7 +398,9 @@ src/d3m0n/
                      gate) + redact_known_secrets() over the agent's summary
   config.py         settings (model name, timeouts, output dir, result-size cap)
   agent/
-    graph.py         LangGraph state machine + the efficiency layer (below)
+    graph.py         LangGraph state machine: Planner/ToolRouter/
+                     ResultInterpreter per turn + the efficiency layer (below)
+    defense_mapper.py  --mode pentest's remediation/detection-rule pass
     backends.py       Claude vs. a local OpenAI-compatible model (see above)
     prompts.py       system prompt + per-node prompt templates
     state.py         shared agent state (objective, scope, history, findings)

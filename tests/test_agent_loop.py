@@ -11,6 +11,7 @@ that already happened to pass"."""
 import json
 
 import d3m0n.agent.graph as graph_mod
+import d3m0n.policy as policy_mod
 import d3m0n.tools.registry as registry_mod
 from d3m0n.agent.backends import Block
 from d3m0n.config import Settings
@@ -160,3 +161,119 @@ def test_live_event_log_records_step_and_tool_done_events(monkeypatch, tmp_path)
     tool_done = next(e for e in events if e["type"] == "tool_done")
     assert tool_done["tool"] == "dns_lookup"
     assert tool_done["ok"] is True
+
+
+# --- DefenseMapper wiring (--mode pentest's use_critic_pass gate) ---
+
+
+def test_defense_mapper_called_and_wired_when_enabled(monkeypatch):
+    monkeypatch.setattr(
+        graph_mod,
+        "_client",
+        lambda: _ScriptedClient(
+            [
+                _ScriptedResponse([_tool_use("c1", "dns_lookup", target="example.com")]),
+                _ScriptedResponse([_tool_use("c2", "finish", summary="done")]),
+            ]
+        ),
+    )
+    monkeypatch.setattr(registry_mod, "dns_lookup", lambda target: {"hostname": target})
+    captured = {}
+
+    def fake_defense_mapper(client, objective, scope_raw, findings):
+        captured["findings"] = findings
+        return {
+            "entries": [{"finding_summary": "x", "remediation": "y", "detection_ideas": "z"}],
+            "generation_error": None,
+        }
+
+    monkeypatch.setattr(graph_mod, "run_defense_mapper", fake_defense_mapper)
+
+    final_state = graph_mod.run_agent(
+        "objective", "example.com", max_steps=5, live_events=False, use_critic_pass=True
+    )
+
+    assert captured["findings"] == final_state["findings"]
+    assert final_state["defense_recommendations"]["entries"][0]["finding_summary"] == "x"
+
+
+def test_defense_mapper_not_called_when_critic_pass_disabled(monkeypatch):
+    monkeypatch.setattr(
+        graph_mod,
+        "_client",
+        lambda: _ScriptedClient(
+            [
+                _ScriptedResponse([_tool_use("c1", "dns_lookup", target="example.com")]),
+                _ScriptedResponse([_tool_use("c2", "finish", summary="done")]),
+            ]
+        ),
+    )
+    monkeypatch.setattr(registry_mod, "dns_lookup", lambda target: {"hostname": target})
+
+    def boom(*a, **k):
+        raise AssertionError("must not call the defense mapper when use_critic_pass is False")
+
+    monkeypatch.setattr(graph_mod, "run_defense_mapper", boom)
+
+    final_state = graph_mod.run_agent(
+        "objective", "example.com", max_steps=5, live_events=False, use_critic_pass=False
+    )
+    assert final_state["defense_recommendations"] is None
+
+
+def test_defense_mapper_not_called_with_zero_findings(monkeypatch):
+    monkeypatch.setattr(
+        graph_mod,
+        "_client",
+        lambda: _ScriptedClient([_ScriptedResponse([_tool_use("c1", "finish", summary="done")])]),
+    )
+
+    def boom(*a, **k):
+        raise AssertionError("must not call the defense mapper with zero findings")
+
+    monkeypatch.setattr(graph_mod, "run_defense_mapper", boom)
+
+    final_state = graph_mod.run_agent(
+        "objective", "example.com", max_steps=5, live_events=False, use_critic_pass=True
+    )
+    assert final_state["defense_recommendations"] is None
+
+
+def test_defense_mapper_entries_get_redacted(monkeypatch):
+    monkeypatch.setattr(
+        policy_mod, "SETTINGS", Settings(session_headers={"Cookie": "sid=LEAKED-TOKEN"})
+    )
+    monkeypatch.setattr(
+        graph_mod,
+        "_client",
+        lambda: _ScriptedClient(
+            [
+                _ScriptedResponse([_tool_use("c1", "dns_lookup", target="example.com")]),
+                _ScriptedResponse([_tool_use("c2", "finish", summary="done")]),
+            ]
+        ),
+    )
+    monkeypatch.setattr(registry_mod, "dns_lookup", lambda target: {"hostname": target})
+    monkeypatch.setattr(
+        graph_mod,
+        "run_defense_mapper",
+        lambda client, objective, scope_raw, findings: {
+            "entries": [
+                {
+                    "finding_summary": "leaked sid=LEAKED-TOKEN",
+                    "remediation": "rotate sid=LEAKED-TOKEN",
+                    "detection_ideas": "watch for sid=LEAKED-TOKEN",
+                }
+            ],
+            "generation_error": None,
+        },
+    )
+
+    final_state = graph_mod.run_agent(
+        "objective", "example.com", max_steps=5, live_events=False, use_critic_pass=True
+    )
+
+    entry = final_state["defense_recommendations"]["entries"][0]
+    assert "LEAKED-TOKEN" not in entry["finding_summary"]
+    assert "LEAKED-TOKEN" not in entry["remediation"]
+    assert "LEAKED-TOKEN" not in entry["detection_ideas"]

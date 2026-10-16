@@ -14,6 +14,7 @@ def write_report(
     findings: list[dict],
     summary: str | None = None,
     summary_before_critic: str | None = None,
+    defense_recommendations: dict | None = None,
 ) -> str:
     os.makedirs(output_dir, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -27,6 +28,8 @@ def write_report(
     }
     if summary_before_critic:
         record["summary_before_critic_self_review"] = summary_before_critic
+    if defense_recommendations:
+        record["defense_recommendations"] = defense_recommendations
     with open(path, "w") as f:
         json.dump(record, f, indent=2, default=str)
     return path

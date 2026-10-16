@@ -46,6 +46,7 @@ import anthropic
 from langgraph.graph import END, StateGraph
 
 from d3m0n.agent.backends import OpenAICompatibleClient
+from d3m0n.agent.defense_mapper import run_defense_mapper
 from d3m0n.agent.events import EventLog
 from d3m0n.agent.prompts import CRITIC_SYSTEM_PROMPT, SYSTEM_PROMPT, objective_prompt
 from d3m0n.agent.state import AgentState
@@ -426,6 +427,7 @@ def run_agent(
         "cache_breakpoint": None,
         "events_path": events_path,
         "summary_before_critic": None,
+        "defense_recommendations": None,
     }
     final_state = compiled.invoke(initial)
 
@@ -445,6 +447,16 @@ def run_agent(
             final_state["summary_before_critic"] = original_summary
             final_state["summary"] = revised
 
+    # DefenseMapper: same --mode pentest extras gate as the critic pass
+    # above (reusing use_critic_pass rather than adding a fourth
+    # _resolve_mode return value for what's really "run the pentest-mode
+    # extras"). One extra non-tool-use call, same never-raises pattern as
+    # run_critic_pass -- see agent/defense_mapper.py.
+    if use_critic_pass and final_state.get("findings"):
+        final_state["defense_recommendations"] = run_defense_mapper(
+            _client(), objective, scope_raw, final_state["findings"]
+        )
+
     # Last-resort redaction pass (policy.redact_known_secrets) over the
     # agent's own free-text summary before anyone reads it (the event
     # log, the printed console output, the saved report). Every
@@ -458,6 +470,11 @@ def run_agent(
         final_state["summary_before_critic"] = redact_known_secrets(
             final_state["summary_before_critic"]
         )
+    if final_state.get("defense_recommendations"):
+        for entry in final_state["defense_recommendations"].get("entries", []):
+            entry["finding_summary"] = redact_known_secrets(entry["finding_summary"])
+            entry["remediation"] = redact_known_secrets(entry["remediation"])
+            entry["detection_ideas"] = redact_known_secrets(entry["detection_ideas"])
 
     if event_log is not None:
         event_log.emit(

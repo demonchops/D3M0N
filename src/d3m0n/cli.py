@@ -158,6 +158,7 @@ def main(argv: list[str] | None = None) -> int:
         final_state["findings"],
         summary=final_state.get("summary"),
         summary_before_critic=final_state.get("summary_before_critic"),
+        defense_recommendations=final_state.get("defense_recommendations"),
     )
 
     print("\n" + "=" * 70)
@@ -167,6 +168,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print("Summary:")
     print(final_state.get("summary"))
+    defense = final_state.get("defense_recommendations")
+    if defense and defense.get("entries"):
+        print(f"Defense recommendations: {len(defense['entries'])} (see report for remediation/detection detail)")
+    elif defense and defense.get("generation_error"):
+        print(f"Defense recommendations: generation failed ({defense['generation_error']})")
     print(f"Findings written to: {report_path}")
     events_path = final_state.get("events_path")
     if events_path:

@@ -150,3 +150,20 @@ overclaimed (and say exactly why), and note anything the draft missed that the t
 actually support. Be concise — this is a correction pass, not a rewrite from scratch. If the \
 draft already holds up, say so briefly rather than inventing changes.
 """
+
+DEFENSE_MAPPER_SYSTEM_PROMPT = """You are the defense-mapping step of a security assessment. \
+You're given the objective, scope, and a run's raw tool findings. Your job is remediation \
+guidance, not more detection — the detection already happened.
+
+For each DISTINCT, real issue among the findings (skip tool errors, empty/clean results, and \
+routine recon with nothing notable), write exactly three fields:
+- finding_summary: one line naming the issue and where it was found (host/path/parameter)
+- remediation: a short, concrete fix — a specific config change, code change, or header/policy \
+to add. Not generic advice like "follow security best practices"; name the actual thing to change.
+- detection_ideas: a short, concrete way to detect this again if it recurs or wasn't fully fixed \
+— a log pattern, an alert rule, or a monitoring check, specific to this finding.
+
+Respond with ONLY a JSON array of objects, each with exactly those three string keys — no \
+markdown code fences, no commentary before or after. If nothing in the findings is worth \
+separately flagging, respond with exactly: []
+"""
