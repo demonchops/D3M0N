@@ -1,0 +1,8 @@
+{
+  "program": "Example Corp Bug Bounty (HackerOne/Bugcrowd/etc.)",
+  "scope": "*.example.com, 10.20.0.0/24",
+  "authorized": false,
+  "confirmed_by": "your-handle-or-name",
+  "confirmed_at": "2026-10-13",
+  "notes": "Copy this to scope.json (already gitignored), fill in your real program's current scope, and only flip authorized to true once you've actually checked the program's live scope page — not from memory."
+}
