@@ -29,8 +29,12 @@ D3M0N enforces scope two ways, and there's no flag that turns either off:
 1. You confirm authorization once per run (or once via a committed scope
    file — see below) before anything touches the network.
 2. Every tool call is checked against that scope independently of whatever
-   the model decided (`safety.enforce_scope()`), so a hallucinated or
+   the model decided, through `policy.PolicyEngine` (`registry.run_tool()`'s
+   actual dispatch gate, not a parallel check), so a hallucinated or
    prompt-injected out-of-scope target just fails instead of running.
+   The same `PolicyEngine` is also the tool whitelist — nothing outside
+   the fixed, individually-reviewed tool set can even be looked up, let
+   alone run.
 
 Within that boundary, the goal is to find as much as it genuinely can.
 
@@ -379,6 +383,8 @@ src/d3m0n/
   safety.py         scope parsing, the authorization gate, scope-file loading
   engagement.py     structured scope+objectives config (JSON/YAML), same
                      authorization rule as safety.py's scope-file loading
+  policy.py         PolicyEngine (tool whitelist + scope, run_tool()'s actual
+                     gate) + redact_known_secrets() over the agent's summary
   config.py         settings (model name, timeouts, output dir, result-size cap)
   agent/
     graph.py         LangGraph state machine + the efficiency layer (below)
@@ -494,5 +500,35 @@ still the main lever you control directly.
 
 Add a new tool by writing a function in `tools/`, registering its schema in
 `tools/registry.py`, and it's available to the planner automatically.
-Everything funnels through `safety.enforce_scope()` first — there's no way
-to register a tool that skips it.
+Everything funnels through `policy.PolicyEngine` first — there's no way to
+register a tool that skips it.
+
+### Policy Engine (`policy.py`)
+
+`PolicyEngine` is the one object `run_tool()` actually asks before
+dispatching — tool-whitelist and scope checks both go through it, so
+"did this action pass policy" has a single, inspectable answer rather
+than being implicit across a few call sites. It mostly wraps mechanisms
+that already existed and were already mandatory (`safety.enforce_scope`,
+the fixed `_DISPATCH` table); the one forward-looking addition is an
+optional `allowed_tools` restriction below the global whitelist, which
+nothing currently populates — it's a ready extension point, not a gap
+being papered over.
+
+It also exposes `redact_known_secrets()`: one consolidated redaction
+pass covering every secret-bearing setting this project knows about
+(both session-header accounts, the Burp REST API key and login
+credentials, the local-model and Anthropic API keys). Every individual
+tool already redacts its own result text, but none of that reaches the
+agent's own free-text summary — `run_agent()` runs the final summary
+through this before anyone sees it, which is the one place the per-tool
+helpers don't reach.
+
+What it deliberately doesn't do: scan the model's own prose for "unsafe
+suggestions" by keyword or pattern. The system prompt instructs the
+model to write manual verification recipes that can legitimately read
+like "try X as the parameter value" — a filter broad enough to catch
+something resembling an exploit would just as reliably mangle that
+correct, intended output. Passive-only stays what it already was: an
+architectural fact (no tool in the registry can exploit or tamper with
+a target), checked here by the whitelist, not a runtime text heuristic.

@@ -31,6 +31,7 @@ from d3m0n.agent.events import EventLog
 from d3m0n.agent.prompts import CRITIC_SYSTEM_PROMPT, SYSTEM_PROMPT, objective_prompt
 from d3m0n.agent.state import AgentState
 from d3m0n.config import SETTINGS
+from d3m0n.policy import redact_known_secrets
 from d3m0n.safety import OutOfScopeError, Scope, parse_scope
 from d3m0n.tools.registry import TOOL_SCHEMAS, run_tool
 
@@ -369,6 +370,20 @@ def run_agent(
         if revised != original_summary:
             final_state["summary_before_critic"] = original_summary
             final_state["summary"] = revised
+
+    # Last-resort redaction pass (policy.redact_known_secrets) over the
+    # agent's own free-text summary before anyone reads it (the event
+    # log, the printed console output, the saved report). Every
+    # individual tool already redacts its own result text, but none of
+    # that covers the model's own prose — this is the one place that
+    # does, covering every secret-bearing setting this project knows
+    # about, not just whichever one a particular tool happened to use.
+    if final_state.get("summary"):
+        final_state["summary"] = redact_known_secrets(final_state["summary"])
+    if final_state.get("summary_before_critic"):
+        final_state["summary_before_critic"] = redact_known_secrets(
+            final_state["summary_before_critic"]
+        )
 
     if event_log is not None:
         event_log.emit(

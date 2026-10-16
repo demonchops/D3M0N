@@ -4,6 +4,7 @@ itself."""
 
 import pytest
 
+import d3m0n.policy as policy_mod
 import d3m0n.tools.registry as registry_mod
 from d3m0n.safety import OutOfScopeError, parse_scope
 from d3m0n.tools.registry import run_tool
@@ -19,6 +20,50 @@ def test_out_of_scope_raises():
     scope = parse_scope("example.com")
     with pytest.raises(OutOfScopeError):
         run_tool("dns_lookup", {"target": "evil.com"}, scope)
+
+
+def test_unknown_tool_name_rejected_by_policy_engine_not_dispatched():
+    # A name that isn't in _DISPATCH at all (not a real schema a model
+    # could actually send, but defensive coverage for a malformed/
+    # hallucinated tool_use block) must be rejected before any lookup
+    # into _DISPATCH is attempted.
+    scope = parse_scope("example.com")
+    result = run_tool("rm_dash_rf_everything", {"target": "example.com"}, scope)
+    assert result == {"error": "Unknown tool: 'rm_dash_rf_everything'"}
+
+
+def test_run_tool_actually_constructs_and_uses_a_policy_engine(monkeypatch):
+    # White-box: prove run_tool's gating is genuinely asking a
+    # PolicyEngine instance, not just independently reproducing the same
+    # checks inline -- the module docstring's claim that this is "the
+    # actual gate the real dispatch path uses" needs to be true, not
+    # just coincidentally consistent with it.
+    calls = {"constructed": False, "tool_allowed": [], "check_scope": []}
+
+    class SpyPolicyEngine:
+        def __init__(self, scope, known_tools, allowed_tools=None):
+            calls["constructed"] = True
+            self._real = policy_mod.PolicyEngine(scope, known_tools, allowed_tools)
+
+        def tool_allowed(self, name):
+            calls["tool_allowed"].append(name)
+            return self._real.tool_allowed(name)
+
+        def check_scope(self, target):
+            calls["check_scope"].append(target)
+            return self._real.check_scope(target)
+
+    monkeypatch.setattr(registry_mod, "PolicyEngine", SpyPolicyEngine)
+    monkeypatch.setattr(
+        registry_mod, "dns_lookup", lambda target: {"hostname": target, "records": {}}
+    )
+
+    scope = parse_scope("example.com")
+    run_tool("dns_lookup", {"target": "example.com"}, scope)
+
+    assert calls["constructed"] is True
+    assert calls["tool_allowed"] == ["dns_lookup"]
+    assert calls["check_scope"] == ["example.com"]
 
 
 def test_stray_scope_key_in_tool_input_does_not_crash_dispatch(monkeypatch):

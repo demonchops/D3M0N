@@ -1,15 +1,17 @@
 """Tool schemas handed to Claude, plus the dispatcher that runs them.
 
-Every tool here is called through `run_tool()`, which enforces scope via
-`safety.enforce_scope()` before dispatching — this is the single choke point
-so no new tool can accidentally skip the authorization check.
+Every tool here is called through `run_tool()`, which gates every call
+through a `policy.PolicyEngine` (tool whitelist + scope) before
+dispatching — this is the single choke point so no new tool can
+accidentally skip either check.
 """
 
 from __future__ import annotations
 
 from typing import Any, Callable
 
-from d3m0n.safety import Scope, enforce_scope
+from d3m0n.policy import PolicyEngine
+from d3m0n.safety import Scope
 from d3m0n.tools.burp_scanner import burp_scan
 from d3m0n.tools.burp_traffic import burp_traffic_review
 from d3m0n.tools.cors_check import cors_check
@@ -408,7 +410,10 @@ _DISPATCH: dict[str, Callable[..., dict]] = {
 
 
 def run_tool(name: str, tool_input: dict, scope: Scope) -> dict:
-    """Dispatch a tool call by name, enforcing scope first.
+    """Dispatch a tool call by name, via the PolicyEngine (policy.py) —
+    tool-whitelist and scope checks both go through one PolicyEngine
+    instance here, so it's the actual gate the real dispatch path uses,
+    not a parallel object nothing calls.
 
     `finish` has no network target and is handled by the graph directly, so
     it's never passed here. `scope` is passed through to every dispatched
@@ -417,7 +422,8 @@ def run_tool(name: str, tool_input: dict, scope: Scope) -> dict:
     since it independently re-checks every host embedded in its input file
     rather than just the single declared `target`.
     """
-    if name not in _DISPATCH:
+    policy = PolicyEngine(scope, known_tools=frozenset(_DISPATCH))
+    if not policy.tool_allowed(name):
         return {"error": f"Unknown tool: {name!r}"}
     # tool_input is model-controlled JSON, never validated against the
     # declared schema on this side. None of the schemas above list "scope"
@@ -431,5 +437,5 @@ def run_tool(name: str, tool_input: dict, scope: Scope) -> dict:
     target = tool_input.get("target")
     if not target:
         return {"error": f"Tool {name!r} requires a 'target'"}
-    enforce_scope(scope, target)  # raises OutOfScopeError on violation
+    policy.check_scope(target)  # raises OutOfScopeError on violation
     return _DISPATCH[name](scope=scope, **tool_input)

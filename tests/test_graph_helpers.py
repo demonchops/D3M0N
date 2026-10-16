@@ -6,7 +6,8 @@ import json
 import pytest
 
 import d3m0n.agent.graph as graph_mod
-from d3m0n.agent.backends import OpenAICompatibleClient
+import d3m0n.policy as policy_mod
+from d3m0n.agent.backends import Block, OpenAICompatibleClient
 from d3m0n.config import Settings
 
 
@@ -147,3 +148,50 @@ def test_findings_for_critic_passthrough_when_small():
     text = graph_mod._findings_for_critic(findings)
     assert "dns_lookup" in text
     assert "truncated" not in text
+
+
+class _FinishResponse:
+    def __init__(self, summary_text: str):
+        self.content = [Block(type="tool_use", id="call_1", name="finish", input={"summary": summary_text})]
+
+
+class _FinishMessages:
+    def __init__(self, summary_text: str):
+        self._summary = summary_text
+
+    def create(self, **kwargs):
+        return _FinishResponse(self._summary)
+
+
+class _FinishClient:
+    def __init__(self, summary_text: str):
+        self.messages = _FinishMessages(summary_text)
+
+
+def test_run_agent_redacts_secret_from_final_summary(monkeypatch):
+    # policy.redact_known_secrets reads policy.py's own module-level
+    # SETTINGS at call time, so patching it there is what matters here --
+    # not graph_mod.SETTINGS, which this test never exercises since the
+    # fake client bypasses _client()'s backend selection entirely.
+    monkeypatch.setattr(
+        policy_mod, "SETTINGS", Settings(session_headers={"Cookie": "sid=SUPER-SECRET-TOKEN"})
+    )
+    monkeypatch.setattr(
+        graph_mod,
+        "_client",
+        lambda: _FinishClient("Found an issue near sid=SUPER-SECRET-TOKEN in the logs."),
+    )
+
+    final_state = graph_mod.run_agent("objective", "example.com", max_steps=1, live_events=False)
+
+    assert "SUPER-SECRET-TOKEN" not in final_state["summary"]
+    assert "REDACTED" in final_state["summary"]
+
+
+def test_run_agent_summary_without_secrets_unaffected(monkeypatch):
+    monkeypatch.setattr(policy_mod, "SETTINGS", Settings())
+    monkeypatch.setattr(graph_mod, "_client", lambda: _FinishClient("Nothing sensitive here."))
+
+    final_state = graph_mod.run_agent("objective", "example.com", max_steps=1, live_events=False)
+
+    assert final_state["summary"] == "Nothing sensitive here."
