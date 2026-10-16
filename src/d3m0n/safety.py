@@ -133,6 +133,41 @@ class ScopeFileError(Exception):
     """Raised when a scope file is missing, malformed, or not marked authorized."""
 
 
+def validate_authorization_dict(data: dict, source: str) -> tuple[Scope, dict]:
+    """The authorization rule itself, factored out of load_scope_file so
+    engagement.py's richer config (scope + an ordered objectives list,
+    loadable from JSON or YAML) enforces the exact same rule through this
+    one function rather than a second, divergently-maintained copy of it.
+    `source` is just a label for the error message (a file path, or a
+    description of where the dict came from)."""
+    if data.get("authorized") is not True:
+        raise ScopeFileError(
+            f'{source!r} does not have "authorized": true. Refusing to run. Edit '
+            f"the file yourself to confirm you hold current authorization for "
+            f"this exact scope before flipping that to true."
+        )
+    confirmed_by = data.get("confirmed_by")
+    if not confirmed_by:
+        raise ScopeFileError(f'{source!r} is missing "confirmed_by" (who is vouching for this).')
+    scope_str = data.get("scope")
+    if not scope_str:
+        raise ScopeFileError(f'{source!r} is missing "scope".')
+
+    scope = parse_scope(scope_str)
+    meta = {
+        # `or` rather than dict.get(key, default): a source whose schema
+        # always materializes every field (e.g. a Pydantic model's
+        # .model_dump(), as engagement.py passes in) sets these to None
+        # rather than omitting them, which would make the dict.get(...,
+        # default) form never fall through to its default at all.
+        "program": data.get("program") or "<unnamed program>",
+        "confirmed_by": confirmed_by,
+        "confirmed_at": data.get("confirmed_at") or "<unspecified>",
+        "notes": data.get("notes") or "",
+    }
+    return scope, meta
+
+
 def load_scope_file(path: str) -> tuple[Scope, dict]:
     """Load a committed scope file instead of prompting every run.
 
@@ -160,32 +195,14 @@ def load_scope_file(path: str) -> tuple[Scope, dict]:
     except json.JSONDecodeError as exc:
         raise ScopeFileError(f"Scope file {path!r} is not valid JSON: {exc}")
 
-    if data.get("authorized") is not True:
-        raise ScopeFileError(
-            f'{path!r} does not have "authorized": true. Refusing to run. Edit '
-            f"the file yourself to confirm you hold current authorization for "
-            f"this exact scope before flipping that to true."
-        )
-    confirmed_by = data.get("confirmed_by")
-    if not confirmed_by:
-        raise ScopeFileError(f'{path!r} is missing "confirmed_by" (who is vouching for this).')
-    scope_str = data.get("scope")
-    if not scope_str:
-        raise ScopeFileError(f'{path!r} is missing "scope".')
-
-    scope = parse_scope(scope_str)
-    meta = {
-        "program": data.get("program", "<unnamed program>"),
-        "confirmed_by": confirmed_by,
-        "confirmed_at": data.get("confirmed_at", "<unspecified>"),
-        "notes": data.get("notes", ""),
-    }
-    return scope, meta
+    return validate_authorization_dict(data, path)
 
 
-def print_scope_file_banner(scope: Scope, meta: dict) -> None:
-    """Print what was loaded from a scope file (no input() prompt — the file
-    itself is the auditable confirmation)."""
+def print_scope_file_banner(scope: Scope, meta: dict, *, source_label: str = "scope file") -> None:
+    """Print what was loaded from a scope/engagement file (no input()
+    prompt — the file itself is the auditable confirmation). engagement.py
+    passes source_label="engagement file" so the banner names what was
+    actually loaded rather than always claiming "scope file"."""
     print("=" * 70)
     print("D3M0N — Autonomous Red-Team Agent")
     print("=" * 70)
@@ -194,5 +211,5 @@ def print_scope_file_banner(scope: Scope, meta: dict) -> None:
     print(f"Authorization confirmed by: {meta['confirmed_by']} on {meta['confirmed_at']}")
     if meta.get("notes"):
         print(f"Notes: {meta['notes']}")
-    print("(loaded from scope file — no per-run prompt)")
+    print(f"(loaded from {source_label} — no per-run prompt)")
     print("=" * 70)

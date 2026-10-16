@@ -1,0 +1,20 @@
+# Same format as engagement.example.json, in YAML. Copy this to
+# engagement.yaml (gitignored), fill in your real program's current
+# scope, and only flip authorized to true once you've actually checked
+# the program's live scope page -- not from memory.
+program: "Example Corp Bug Bounty (HackerOne/Bugcrowd/etc.)"
+scope: "*.example.com, 10.20.0.0/24"
+authorized: false
+confirmed_by: "your-handle-or-name"
+confirmed_at: "2026-10-16"
+notes: >
+  Same authorization rule as scope.example.json; this just also lets you
+  write down the objectives up front instead of retyping --objective
+  every run.
+objectives:
+  - phase: recon
+    description: "Enumerate subdomains and flag every live host."
+  - phase: detect
+    description: "Run nuclei/js_secrets_scan/security_headers_check/cors_check on every live host."
+  - phase: access_control
+    description: "idor_check every resource-shaped URL found while browsing authenticated."

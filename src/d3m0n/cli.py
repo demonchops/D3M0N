@@ -6,6 +6,7 @@ import sys
 from d3m0n.agent.graph import run_agent
 from d3m0n.agent.prompts import PENTEST_MODE_DIRECTIVE, PENTEST_MODE_MIN_STEPS
 from d3m0n.config import SETTINGS
+from d3m0n.engagement import engagement_scope, load_engagement_config, objectives_summary
 from d3m0n.safety import (
     ScopeFileError,
     confirm_authorization,
@@ -52,11 +53,20 @@ def main(argv: list[str] | None = None) -> int:
         "--scope. No interactive prompt — the file itself is the auditable "
         'authorization record, and it has to say "authorized": true.',
     )
+    scope_group.add_argument(
+        "--engagement-file",
+        help="Path to a structured engagement config (JSON or YAML — see "
+        "engagement.example.json/.yaml) combining scope with an ordered list of "
+        "objectives, instead of --scope-file. Same authorization rule as "
+        '--scope-file ("authorized": true, "confirmed_by" required); supplies '
+        "--objective automatically from its objectives list.",
+    )
     parser.add_argument(
         "--objective",
-        required=True,
         help="What you want the agent to work on, e.g. 'Enumerate subdomains and "
-        "flag anything exposing an admin panel'",
+        "flag anything exposing an admin panel'. Required unless --engagement-file "
+        "supplies objectives of its own — if both are given, this is appended as "
+        "an extra instruction alongside the file's objectives.",
     )
     parser.add_argument("--max-steps", type=int, default=SETTINGS.max_steps)
     parser.add_argument(
@@ -70,13 +80,39 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if args.scope_file:
+    if args.engagement_file:
+        try:
+            config = load_engagement_config(args.engagement_file)
+            scope, meta = engagement_scope(config)
+        except ScopeFileError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print_scope_file_banner(scope, meta, source_label="engagement file")
+        objective_text = objectives_summary(config)
+        if args.objective:
+            objective_text = (
+                f"{objective_text}\n\nAdditional instruction: {args.objective}"
+                if objective_text
+                else args.objective
+            )
+        if not objective_text:
+            print(
+                f"{args.engagement_file!r} has no pending objectives and no --objective "
+                "was given — nothing to work on.",
+                file=sys.stderr,
+            )
+            return 2
+    elif args.scope_file:
         try:
             scope, meta = load_scope_file(args.scope_file)
         except ScopeFileError as exc:
             print(str(exc), file=sys.stderr)
             return 2
         print_scope_file_banner(scope, meta)
+        if not args.objective:
+            print("--objective is required when using --scope-file.", file=sys.stderr)
+            return 2
+        objective_text = args.objective
     else:
         try:
             scope = parse_scope(args.scope)
@@ -84,6 +120,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Invalid scope: {exc}", file=sys.stderr)
             return 2
         confirm_authorization(scope)
+        if not args.objective:
+            print("--objective is required when using --scope.", file=sys.stderr)
+            return 2
+        objective_text = args.objective
 
     if SETTINGS.backend == "local":
         print(f"[backend] local model at {SETTINGS.local_model_url!r} ({SETTINGS.model})")
@@ -101,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         final_state = run_agent(
-            args.objective,
+            objective_text,
             scope.raw,
             max_steps=resolved_max_steps,
             methodology_directive=methodology_directive,
@@ -113,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
 
     report_path = write_report(
         SETTINGS.output_dir,
-        args.objective,
+        objective_text,
         scope.raw,
         final_state["findings"],
         summary=final_state.get("summary"),

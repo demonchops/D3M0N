@@ -107,6 +107,34 @@ No interactive prompt — the file itself, with `"authorized": true` and a
 if either is missing, so copying the example file unedited fails safe (it
 ships with `"authorized": false`).
 
+### Structured engagement files: scope + objectives in one place
+
+`--engagement-file` is a superset of `--scope-file` for a multi-step
+engagement: the same scope/authorization fields, plus an ordered
+`objectives` list (each one tagged with a `phase` — `recon`, `map`,
+`detect`, `access_control`, `defend`, or `verify`) so you write the plan
+down once instead of retyping `--objective` every run. JSON or YAML, by
+file extension:
+
+```bash
+cp engagement.example.json engagement.json   # or .yaml -- then edit it
+python -m d3m0n.cli --engagement-file engagement.json
+```
+
+It's the exact same authorization rule as `--scope-file` — `"authorized":
+true` plus `confirmed_by`, enforced through the one shared function both
+loaders call (`safety.validate_authorization_dict`), not a second,
+divergently-maintained copy of that rule. The example ships with
+`"authorized": false`, same fail-safe default as `scope.example.json`.
+
+The agent's objective comes from the file's `objectives` (skipping any
+already marked `"done": true`); pass `--objective` alongside it to add
+one more ad-hoc instruction on top rather than replace the list. If you'd
+rather just supply scope this way and keep typing a fresh `--objective`
+each run, that works too — an engagement file with an empty (or
+all-`done`) `objectives` list just requires `--objective` instead, same
+as `--scope-file` does.
+
 ## Live TUI
 
 `tui/` is a small, separate Go module — a read-only terminal dashboard that
@@ -349,6 +377,8 @@ mutation are not something you want bundled together.
 src/d3m0n/
   cli.py           entrypoint, argument parsing, authorization (prompt or file)
   safety.py         scope parsing, the authorization gate, scope-file loading
+  engagement.py     structured scope+objectives config (JSON/YAML), same
+                     authorization rule as safety.py's scope-file loading
   config.py         settings (model name, timeouts, output dir, result-size cap)
   agent/
     graph.py         LangGraph state machine + the efficiency layer (below)

@@ -9,6 +9,13 @@ d3m0n_runs/
 # scope.example.json and never commit the filled-in version.
 scope.json
 
+# Same for the structured engagement config (scope.json + an objectives
+# list) — copy from engagement.example.json/.yaml, never commit the
+# filled-in version.
+engagement.json
+engagement.yaml
+engagement.yml
+
 # Go build output, if you build the TUI companion with an output path here.
 tui/d3m0n-tui
 tui/*.exe
